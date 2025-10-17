@@ -15,7 +15,7 @@ fi
 
 # NOTE: Update this path to your own dataset location before running
 export CSV_PATH="./npz_training_set.csv"
-export DATASET_IDX=$DATASET_IDX
+export DATASET_IDX="$DATASET_IDX"
 
 # Function to start the job
 start_job() {
