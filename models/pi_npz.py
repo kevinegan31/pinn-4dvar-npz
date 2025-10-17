@@ -162,3 +162,22 @@ class PhysicsInformedNN(pl.LightningModule):
         f_pred = self.net_f(u_pred_for_f, t_step).detach().cpu().numpy()
 
         return u_pred.cpu().numpy(), f_pred
+
+def forward_pinn(model, initial_state, nd_ntot, truth_t):
+    model.eval()  # Just in case
+
+    # Prepare initial state (normalize)
+    initial_state_x0 = initial_state / nd_ntot
+    forward_predictions = [initial_state_x0]  # Start with normalized x0
+
+    for _ in range(len(truth_t) - 1):
+        inp = forward_predictions[-1].unsqueeze(0)  # Shape [1, 3]
+        with torch.no_grad():
+            ut = model.net_u(inp)  # Shape [1, 3]
+        forward_predictions.append(ut.squeeze(0))  # Shape [3]
+
+    # Stack into tensor of shape [T, 3]
+    forward_predictions_tensor = torch.stack(forward_predictions)
+
+    # De-normalize output
+    return forward_predictions_tensor * nd_ntot
