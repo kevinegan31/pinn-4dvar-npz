@@ -33,3 +33,11 @@ def rk4(f, x0, times, tfrc, frc, args):
             x[n, :] += f[fl, :].sum(axis=0)
 
     return x
+
+# RK4 for a single set of initial conditions
+def run_rk4_for_initial_conditions(N0, P0, Z0, t, phi):
+    # Define the initial conditions as a list
+    x0 = [N0, P0, Z0]
+    # Use the rk4 method to expand the system over time
+    xt = rk4(npz_nl, x0, t, None, 0, phi)
+    return xt
