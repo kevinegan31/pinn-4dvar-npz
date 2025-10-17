@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define variables
-SCRIPT_NAME="npz_pinn_bayesopt_frozen_params.py"
-PID_FILE="pinn_training_bayesopt_frozen_params.pid"
+SCRIPT_NAME="pi_npz_hpo.py"
+PID_FILE="pi_npz_hpo_training.pid"
 DATASET_IDX=$(printf "%02d" ${2:-1})
-LOGFILE="pinn_training_optuna_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
+LOGFILE="pinn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 
 # Set environment variables
 export ACTIVATION_FUNCTION='gelu'
@@ -14,9 +14,8 @@ if [ -z "$DATASET_IDX" ]; then
   DATASET_IDX="01"
 fi
 
-# export CSV_PATH="/share/tempest2/egank31/pinn_test_data/uniformN_dirPZ_evolved_states_70perc_far_dataset_${DATASET_IDX}_500000samples_10minutes.csv"
-export CSV_PATH="/share/tempest2/egank31/pinn_test_data/npz_70far_30near_7_days_training_set.csv"
-# export CSV_PATH="/share/tempest2/egank31/pinn_test_data/updated_uniformN_dirPZ_evolved_states_70perc_far_dataset_01_100000samples_10minutes.csv"
+# NOTE: Update this path to your own dataset location before running
+export CSV_PATH="./npz_training_set.csv"
 export DATASET_IDX=$DATASET_IDX
 
 # Function to start the job
