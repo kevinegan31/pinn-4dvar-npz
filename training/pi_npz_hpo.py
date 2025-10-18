@@ -345,7 +345,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     # Start with the rollout holdout data
     # Update the path as necessary
-    rollout_df = pd.read_csv("./npz_70far_30near_7_days_05min_val_holdout_set.csv")
+    rollout_df = pd.read_csv("./npz_70far_30near_7_days_holdout_set.csv")
     rollout_ics = rollout_df[['N', 'P', 'Z']].values
     # Constants
     Vm_franks, ks_franks, m_franks, gamma_franks, Rm_franks, ivlev_franks, q_franks = 2, 1, 0.1, 0.3, 1.5, 1, 0.2
