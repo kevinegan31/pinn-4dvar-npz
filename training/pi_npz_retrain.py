@@ -123,19 +123,16 @@ if __name__ == '__main__':
     g = torch.Generator()
     g.manual_seed(1234)
     # Split dataset into training and validation sets
-    # batch_size = 2048  # Fixed batch size for training
     full_dataset = TensorDataset(x, u)
     full_dataset_loader = DataLoader(
         full_dataset,
         batch_size=batch_size,
         num_workers=8,  # Adjust based on your system
         pin_memory=True,  # Enable if using GPU
-        # prefetch_factor=2,  # Optional: adjust based on your system
         shuffle=True,
         worker_init_fn=seed_worker,
         generator=g,
         )
-    # full_dataset_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True)
     # Hyperparameters
     num_layers = NUM_LAYERS
     num_neurons = NUM_NEURONS
