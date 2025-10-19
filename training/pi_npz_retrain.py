@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 from pytorch_lightning import seed_everything
-from torch.utils.data import random_split, DataLoader, TensorDataset
-from lightning.pytorch import Trainer
+from torch.utils.data import DataLoader, TensorDataset
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.callbacks import LearningRateMonitor
-from sklearn.preprocessing import QuantileTransformer
 
 import lightning as pl
 import wandb
 import time
-import joblib
 from joblib import Parallel, delayed
 
 # Local imports ----------------------------------------------
@@ -20,9 +16,11 @@ from joblib import Parallel, delayed
 import shutil
 import os
 import sys
-# sys.path.append('/share/tempest2/egank31/pinn_model_utils/')
-sys.path.append('/share/tempest2/egank31/pinn_model_utils/')
-from pl_model_utils_frozen import DNN, PhysicsInformedNN
+sys.path.append('./models/')
+from pi_npz_model import DNN, PhysicsInformedNN
+from traditional_npz import run_rk4_for_initial_conditions
+sys.path.append('./utils/')
+from additional_files import compute_survival_metrics, forward_pinn, read_and_preprocess_data, calculate_global_rmse
 
 import torch
 from torch import nn
@@ -32,7 +30,6 @@ import pandas as pd
 from collections import OrderedDict
 import datetime
 
-from random import sample
 import csv
 import random
 # Set a fixed seed for reproducibility
@@ -40,11 +37,6 @@ DATASET_IDX = os.getenv('DATASET_IDX', '01')
 # SEED = 1000 * int(DATASET_IDX)
 SEED = int(os.getenv('SEED', '1234'))
 seed_everything(SEED, workers=True)
-# seed_everything(1234, workers=True)  # Replace 1234 with your preferred seed value
-
-# Initialize Distributed Processing Group
-import torch.distributed as dist
-from torch.distributed import init_process_group
 
 # Wandb API key
 os.environ["WANDB_API_KEY"] = "afbdb23b998f8a00b04076885fa26f4ec70f0a16"
@@ -63,152 +55,6 @@ formatted_timestamp = dt_object.strftime("%Y_%m_%d")
 NUM_LAYERS = int(os.getenv('NUM_LAYERS', '5'))
 NUM_NEURONS = int(os.getenv('NUM_NEURONS', '96'))
 LEARNING_RATE = float(os.getenv('LEARNING_RATE', '0.005'))
-
-def npz_nl(x, t, Vm, ks, m, Rm, ivlev, gamma, q):
-    x = np.asarray(x)
-    dx = np.zeros(x.shape)
-
-    
-    dx[1] = (((Vm * x[0]) / (ks + x[0])) * x[1]) - (m * x[1]) - (ivlev * x[1] * Rm * (1 - np.exp(-ivlev * x[1])) * x[2])
-    dx[2] = ((1 - gamma) * ivlev * x[1] * Rm * (1 - np.exp(-ivlev * x[1])) * x[2]) - (q * x[2])
-    dx[0] = -(((Vm * x[0]) / (ks + x[0])) * x[1]) + (m * x[1]) + (q * x[2]) + (gamma * ivlev * x[1] * Rm * (1 - np.exp(-ivlev * x[1])) * x[2])
-    
-    return dx
-    
-def rk4(f, x0, times, tfrc, frc, args):
-    """
-    Perform the model integration using the Runge-Kutta 4. This
-    allows for the function to be forced at given times, ft, by the forcing, f.
-    """
-    nt = len(times)
-    x = np.zeros((nt, len(x0)))
-    x[0, :] = x0
-    dt = np.zeros(nt)
-    dt[1:] = np.diff(times)
-    for n in range(1, nt):
-        k1 = f(x[n - 1, :], times[n], *args) * dt[n]
-        k2 = f(x[n - 1, :] + 0.5 * k1, times[n] + 0.5 * dt[n], *args) * dt[n]
-        k3 = f(x[n - 1, :] + 0.5 * k2, times[n] + 0.5 * dt[n], *args) * dt[n]
-        k4 = f(x[n - 1, :] + k3, times[n] + dt[n], *args) * dt[n]
-        x[n, :] = x[n - 1, :] + (k1 + 2 * k2 + 2 * k3 + k4) / 6
-
-        if tfrc is not None:
-            fl = np.where(np.logical_and(tfrc >= times[n] - 0.5 * dt[n],
-                                         tfrc < times[n] + 0.5 * dt[n]))[0]
-            x[n, :] += f[fl, :].sum(axis=0)
-
-    return x
-
-# RK4 for a single set of initial conditions
-def run_rk4_for_initial_conditions(N0, P0, Z0, t, phi):
-    # Define the initial conditions as a list
-    x0 = [N0, P0, Z0]
-    # Use the rk4 method to expand the system over time
-    xt = rk4(npz_nl, x0, t, None, 0, phi)
-    return xt
-
-def forward_pinn(model, initial_state, nd_ntot, truth_t):
-    model.eval()  # Just in case
-
-    # Prepare initial state (normalize)
-    initial_state_x0 = initial_state / nd_ntot
-    forward_predictions = [initial_state_x0]  # Start with normalized x0
-
-    for _ in range(len(truth_t) - 1):
-        inp = forward_predictions[-1].unsqueeze(0)  # Shape [1, 3]
-        with torch.no_grad():
-            ut = model.net_u(inp)  # Shape [1, 3]
-        forward_predictions.append(ut.squeeze(0))  # Shape [3]
-
-    # Stack into tensor of shape [T, 3]
-    forward_predictions_tensor = torch.stack(forward_predictions)
-
-    # De-normalize output
-    return forward_predictions_tensor * nd_ntot
-
-def calculate_global_rmse(actuals, predictions):
-    actual_all = np.vstack(actuals)      # Shape: [N*T, d]
-    predicted_all = np.vstack(predictions)
-    residuals = predicted_all - actual_all
-    return np.sqrt(np.nanmean(residuals**2))  # Handles NaNs safely
-    # return np.sqrt(np.nanmean(residuals**2)) if np.isfinite(residuals).all() else np.inf
-
-def compute_survival_metrics(skill_scores, threshold, step_minutes=10):
-    traj_len = skill_scores.shape[1]
-    div_times = []
-    for traj in np.nanmean(skill_scores, axis=2):  # Mean over vars
-        diverged_idx = np.where(traj < threshold)[0]
-        div_times.append(diverged_idx[0] if len(diverged_idx) > 0 else traj_len)
-
-    div_times = np.array(div_times)
-    t_div_days = div_times * (step_minutes / 60 / 24)
-    full_window = traj_len * (step_minutes / 60 / 24)
-    frac_survived = np.mean(div_times == traj_len)
-
-    if frac_survived == 0.0:
-        print(f"Warning: No trajectories survived the full window at threshold {threshold}")
-        # Optionally clamp or log this case depending on use:
-        # return a penalty or NaN-safe value if needed for HPO
-        # e.g., return very low value to penalize this config:
-        return {
-            "mean_days": np.mean(t_div_days),
-            "median_days": np.median(t_div_days),
-            "frac_survived": 0.0
-        }
-
-    return {
-        "mean_days": np.mean(t_div_days),
-        "median_days": np.median(t_div_days),
-        "frac_survived": frac_survived
-    }
-
-# Read and preprocess the data --------------------------------------------------------------
-# def read_and_preprocess_data(file_path, chunksize=10**6, device='cuda'):
-#     print("Reading CSV file...")
-#     sys.stdout.flush()
-#     chunks = pd.read_csv(file_path, chunksize=chunksize)
-#     df_list = [chunk for chunk in chunks]
-#     df = pd.concat(df_list)
-#     print("CSV file read successfully")
-#     sys.stdout.flush()
-#     dtype = torch.float32
-#     X = df.iloc[:,1:-3].values
-#     u = df.iloc[:, -3:].values
-#     nd_ntot = np.ceil(X.sum(axis=1).max() * 100) / 100
-#     X_modeling = X.copy()
-#     u_modeling = u.copy()
-#     X_modeling_nd = X_modeling.copy()
-#     u_modeling_nd = u_modeling.copy()
-#     # Non-dimensionalize N, P, Z. Keep time constant 1
-#     X_modeling_nd = X_modeling / nd_ntot
-#     u_modeling_nd = u_modeling / nd_ntot
-#     X_modeling_nd = torch.tensor(X_modeling_nd, device=device, dtype=dtype)
-#     u_modeling_nd = torch.tensor(u_modeling_nd, device=device, dtype=dtype)
-#     return X_modeling_nd, u_modeling_nd, nd_ntot
-
-def read_and_preprocess_data(file_path, chunksize=10**6, device='cuda'):
-    print("Reading CSV file...")
-    chunks = pd.read_csv(file_path, chunksize=chunksize)
-    df = pd.concat(chunks)
-    print("CSV file read successfully")
-
-    dtype = torch.float32
-
-    # Inputs: N0, P0, Z0
-    X = df.iloc[:, :3].values
-    # Targets: N10, P10, Z10
-    u = df.iloc[:, 3:].values
-
-    # Non-dimensionalize by max Ntot
-    nd_ntot = np.ceil(max(X.sum(axis=1).max(), u.sum(axis=1).max()) * 100) / 100
-    X_nd = X / nd_ntot
-    u_nd = u / nd_ntot
-
-    # Convert to tensors
-    X_nd = torch.tensor(X_nd, device=device, dtype=dtype)
-    u_nd = torch.tensor(u_nd, device=device, dtype=dtype)
-
-    return X_nd, u_nd, nd_ntot
 
 # Environment variables
 NEPOCH_ADAM = int(os.getenv('NEPOCH_ADAM', '1000')) #100 #int(os.getenv('NEPOCH_ADAM', '100'))
@@ -244,14 +90,12 @@ def seed_worker(worker_id):
 
 
 if __name__ == '__main__':
-    # Checkpoint callback to save the best model
-
     # Read and preprocess the data
     print("Loading and Running Franks...")
     sys.stdout.flush()
     # Start with the rollout holdout data
     # rollout_df = pd.read_parquet("/share/tempest2/egank31/pinn_test_data/rollout_holdout_1500.parquet")
-    rollout_df = pd.read_csv("/share/tempest2/egank31/pinn_test_data/npz_70far_30near_7_days_holdout_set.csv")
+    rollout_df = pd.read_csv("./npz_70far_30near_7_days_holdout_set.csv")
     rollout_ics = rollout_df[['N', 'P', 'Z']].values
     # Constants
     Vm_franks, ks_franks, m_franks, gamma_franks, Rm_franks, ivlev_franks, q_franks = 2, 1, 0.1, 0.3, 1.5, 1, 0.2
@@ -298,7 +142,7 @@ if __name__ == '__main__':
     learning_rate = LEARNING_RATE
     lambda_u = 1.0 #config["lambda_u"]
     lambda_f = 1.0 #config["lambda_f"]
-    checkpoint_dir = f"/share/tempest2/egank31/checkpoints/retrain_frozen_params_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr"
+    checkpoint_dir = f"./retrain_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr"
 
     # Check if the directory exists, and if not, create it
     ensure_dir(checkpoint_dir)
@@ -327,8 +171,8 @@ if __name__ == '__main__':
     # Initialize WandbLogger
     n_obs = len(x)
     wandb_logger = WandbLogger(
-        project=f"frozen_params_retrain_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr",   # Replace with your WandB project name
-        name=f"second_run_{NEPOCH_ADAM}_epochs_{formatted_timestamp}_dataset_{DATASET_IDX}",  # Unique name for each run using timestamp
+        project=f"retrain_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr",   # Replace with your WandB project name
+        name=f"retrain_{NEPOCH_ADAM}_epochs_{formatted_timestamp}_dataset_{DATASET_IDX}",  # Unique name for each run using timestamp
         log_model=False,
         # save_dir="./checkpoints/"   # Optional local directory to save logs
     )
@@ -347,12 +191,13 @@ if __name__ == '__main__':
         "batch_size": batch_size,
     }
     # checkpoint_name = f'optimal_{NEPOCH_ADAM}_total_epochs_retrain_opt_{DATASET_IDX}_dataset_{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min_epoch{{epoch:04d}}'
-    checkpoint_name = (
-    f'optimal_{NEPOCH_ADAM}_epochs_retrain_opt_{DATASET_IDX}_dataset_'
-    f'{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_'
-    f'lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min'
-    f'_{{epoch:04d}}'
-    )
+    # checkpoint_name = (
+    # f'optimal_{NEPOCH_ADAM}_epochs_retrain_opt_{DATASET_IDX}_dataset_'
+    # f'{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_'
+    # f'lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min'
+    # f'_{{epoch:04d}}'
+    # )
+    checkpoint_name = 'pi_npz_final_{{epoch:04d}}'
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
@@ -362,7 +207,6 @@ if __name__ == '__main__':
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')  # or 'epoch' if that fits your decay style
-    # early_stopping = False
     trainer = pl.Trainer(max_epochs=NEPOCH_ADAM,
                          accelerator='gpu',
                          devices=num_gpus,
@@ -418,16 +262,6 @@ if __name__ == '__main__':
         forward_truths = np.array(forward_actuals)          # Shape: [N, T, 3]
         epsilon = 1e-8  # very small, avoids affecting non-zero values
         skill_scores = 1 - (np.abs(forward_preds - forward_truths) / (np.abs(forward_truths) + epsilon))
-
-        # Now aggregate: mean and std over all trajectories (axis=0)
-        # Resulting shapes: (num_time_steps, num_vars)
-        # Set invalid entries (NaN or Inf) to a penalty value like -1
-        # invalid_mask = ~np.isfinite(skill_scores)
-        # skill_scores[invalid_mask] = -1.0
-        # skill_mean = np.mean(skill_scores, axis=0)
-        # survival_99 = compute_survival_metrics(skill_scores, threshold=0.99)
-        # survival_score = survival_99["frac_survived"]
-        # survival_99_dict = {'frac_survived': survival_score}
         wall_clock_hours = (end - start) / 3600
         gpu_hours = wall_clock_hours * num_gpus
         skill_scores_penalized = np.where(np.isfinite(skill_scores), skill_scores, -1.0)
@@ -456,16 +290,7 @@ if __name__ == '__main__':
         median_div_time = np.median(t_div)
 
         total_rmse = calculate_global_rmse(forward_actuals, forward_predictions_list)
-
-        # # Use penalized skill scores for survival metrics
-        # survival_99 = compute_survival_metrics(skill_scores_penalized, threshold=0.90)
-        # survival_99_dict = {"frac_survived": survival_99["frac_survived"]}
         
-        # # objective_score = survival_99_dict['frac_survived']  * global_skill_flat
-        # global_skill_clipped = np.clip(global_skill_flat, 0.0, 1.0)
-        # # objective_score = survival_99_dict['frac_survived'] * global_skill_clipped
-        # objective_score = (0.9 * survival_99_dict['frac_survived']) + (0.1 * global_skill_clipped)
-        # Survival at 0.95
         stability = compute_survival_metrics(skill_scores_penalized, threshold=stability_threshold)
         frac_stable = stability["frac_survived"]
 
@@ -474,15 +299,6 @@ if __name__ == '__main__':
 
         # Penalty for invalid fraction
         validity_score = 1.0 - invalid_fraction  # higher is better
-
-        # if invalid_fraction > 0.0:
-        #     objective_score = 0.0
-        # else:
-        #     objective_score = (
-        #         0.95 * frac_stable +
-        #         0.05 * global_skill_clipped #+
-        #         # 0.1 * validity_score
-        #     )
         # -----------------------------
         # Log metrics
         # -----------------------------
