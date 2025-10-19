@@ -2,12 +2,8 @@
 # Import necessary libraries
 import torch
 from torch import nn
-import torch.optim as optim
-import torch.optim.lr_scheduler as lr_scheduler  # Import schedulers
 import lightning as pl
 from collections import OrderedDict
-import random
-import sys
 
 # Neural network class
 class DNN(nn.Module):
