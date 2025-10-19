@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import pandas as pd
 from scipy.optimize import fsolve, brentq
-from models.traditional_npz import rk4
 
 def compute_time_to_divergence(forward_actuals, forward_predictions,
                                rel_error_threshold=0.01, epsilon=1e-8):
@@ -225,11 +224,3 @@ def embedded_npz(x, t, alpha, beta, b, c, e, f):
     dx[0] = (-((alpha * np.tanh(beta * x[0])) * x[1]) + (b * (x[1])) + (c * (x[2])) + (f * (x[1] * x[2])))
     
     return dx
-
-# RK4 for a single set of initial conditions
-def run_rk4_embedded_npz(N0, P0, Z0, t, phi):
-    # Define the initial conditions as a list
-    x0 = [N0, P0, Z0]
-    # Use the rk4 method to expand the system over time
-    xt = rk4(embedded_npz, x0, t, None, 0, phi)
-    return xt
