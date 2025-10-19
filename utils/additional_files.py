@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import pandas as pd
+from scipy.optimize import fsolve, brentq
 
 def compute_time_to_divergence(forward_actuals, forward_predictions,
                                rel_error_threshold=0.01, epsilon=1e-8):
@@ -122,3 +123,94 @@ def read_and_preprocess_data(file_path, chunksize=10**6, device='cuda'):
     u_nd = torch.tensor(u_nd, device=device, dtype=dtype)
 
     return X_nd, u_nd, nd_ntot
+
+# Original
+def sample_npz_uniformN_dirichletPZ(n_samples, mean_ntot=2.0, std_ntot=0.2, min_val=0.001):
+        
+    # 1. Sample N fraction uniformly
+    N_frac = np.random.uniform(0.05, 0.9, size=n_samples)
+
+    # 2. Remaining fraction
+    remaining_frac = 1.0 - N_frac
+
+    # 3. Sample P and Z fractions using Dirichlet
+    PZ_frac = np.random.dirichlet([1, 1], size=n_samples)
+    P_frac = PZ_frac[:, 0] * remaining_frac
+    Z_frac = PZ_frac[:, 1] * remaining_frac
+
+    # 4. Sample total nitrogen
+    ntot = np.random.normal(loc=mean_ntot, scale=std_ntot, size=n_samples)
+
+    # 5. Scale to real values
+    N = N_frac * ntot
+    P = P_frac * ntot
+    Z = Z_frac * ntot
+
+    # 6. Stack and apply minimum value
+    NPZ = np.stack([N, P, Z], axis=1)
+    NPZ = np.maximum(NPZ, min_val)
+
+    return NPZ
+
+def calculate_fixed_points(IC, Vm=2, ks=1, m=0.1, Rm=1.5, ivlev=1, gamma=0.3, q=0.2, mp=True):
+    """
+    Compute the fixed points for the NPZ system given an initial condition [N, P, Z].
+    """
+    N0, P0, Z0 = IC
+    Ntot = N0 + P0 + Z0
+
+    if mp:
+        def fpf(ppf):
+            return (ppf * (1. - np.exp(-ivlev * Ntot * ppf))) - \
+                ((q / Vm) / ((Rm / Vm) * ivlev * Ntot * (1. - gamma)))
+
+        try:
+            # Pf_guess = np.min(fsolve(fpf, np.array([0.01, 0.99])))
+            Pf_guess = fsolve(fpf, 0.5)[0]  # cleaner and safer
+            if (Pf_guess < 0) or (not np.isclose(Pf_guess, 0.49, atol=0.01)):
+                # Check signs before using brentq
+                if np.sign(fpf(0.01)) == np.sign(fpf(0.99)):
+                    return np.array([np.nan, np.nan, np.nan])
+                Pf = brentq(fpf, 0.01, 0.99)
+            else:
+                Pf = Pf_guess
+        except Exception:
+            return np.array([np.nan, np.nan, np.nan])
+    else:
+        try:
+            inner_term = 1 - ((q / Vm) / ((Rm / Vm) * (1 - gamma)))
+            if inner_term <= 0:
+                return np.array([np.nan, np.nan, np.nan])
+            Pf = -1.0 / (ivlev * Ntot) * np.log(inner_term)
+        except Exception:
+            return np.array([np.nan, np.nan, np.nan])
+
+    # Quadratic for Zf
+    a = -(q / Vm) / (1 - gamma)
+    b = ((q / Vm) / (1 - gamma)) * ((ks / Ntot) + 1 - Pf) + Pf - ((m / Vm) * Pf)
+    c = Pf * ((m / Vm) * ((ks / Ntot) + 1 - Pf) + Pf - 1)
+
+    discriminant = b ** 2 - 4 * a * c
+    if discriminant < 0:
+        return np.array([np.nan, np.nan, np.nan])
+
+    # Zf_candidates = [(-b + np.sqrt(discriminant)) / (2 * a),
+    #                  (-b - np.sqrt(discriminant)) / (2 * a)]
+    # Zf = np.min(Zf_candidates)
+
+    Zf_candidates = [z for z in [
+        (-b + np.sqrt(discriminant)) / (2 * a),
+        (-b - np.sqrt(discriminant)) / (2 * a)
+    ] if 0 < z < 1 - Pf]
+    
+    if not Zf_candidates:
+        return np.array([np.nan, np.nan, np.nan])
+    
+    Zf = Zf_candidates[0]  # Or choose max/min depending on expected steady state
+    
+    Nf = 1 - Pf - Zf
+    Pf *= Ntot
+    Zf *= Ntot
+    Nf *= Ntot
+
+    return np.array([Nf, Pf, Zf])
