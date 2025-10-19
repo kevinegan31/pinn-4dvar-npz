@@ -34,7 +34,6 @@ import csv
 import random
 # Set a fixed seed for reproducibility
 DATASET_IDX = os.getenv('DATASET_IDX', '01')
-# SEED = 1000 * int(DATASET_IDX)
 SEED = int(os.getenv('SEED', '1234'))
 seed_everything(SEED, workers=True)
 
