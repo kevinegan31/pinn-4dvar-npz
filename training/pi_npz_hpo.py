@@ -57,7 +57,7 @@ timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 dt_object = datetime.datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
 formatted_timestamp = dt_object.strftime("%Y_%m_%d")
 # Checkpoint callback to save the best model
-checkpoint_dir = f"/share/tempest2/egank31/checkpoints/bayesopt_frozen_params_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes"
+checkpoint_dir = f"./bayesopt_frozen_params_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes"
 
 # Check if the directory exists, and if not, create it
 ensure_dir(checkpoint_dir)
