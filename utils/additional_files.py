@@ -214,3 +214,14 @@ def calculate_fixed_points(IC, Vm=2, ks=1, m=0.1, Rm=1.5, ivlev=1, gamma=0.3, q=
     Nf *= Ntot
 
     return np.array([Nf, Pf, Zf])
+
+def embedded_npz(x, t, alpha, beta, b, c, e, f):
+    x = np.asarray(x)
+    dx = np.zeros(x.shape)
+
+    
+    dx[1] = (((alpha * np.tanh(beta * x[0])) * x[1]) - (b * (x[1]**2)) - ((e + f) * (x[1] * x[2])))
+    dx[2] = ((e * (x[1] * x[2])) - (c * (x[2]**2)))
+    dx[0] = (-((alpha * np.tanh(beta * x[0])) * x[1]) + (b * (x[1]**2)) + (c * (x[2]**2)) + (f * (x[1] * x[2])))
+    
+    return dx
