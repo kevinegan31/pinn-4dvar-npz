@@ -177,3 +177,135 @@ def forward_pinn(model, initial_state, nd_ntot, truth_t):
 
     # De-normalize output
     return forward_predictions_tensor * nd_ntot
+
+
+### PINN FUNCTIONS -----------------------------------------
+# Forward Model PINN (Uses PyTorch tensors throughout)
+def forward_pinn_assimilation(model, nd_initial_state, trajectory_times):
+    # Initialize predictions list
+    forward_predictions = []
+    initial_state_x0 = nd_initial_state  # Non-dimensionalized initial state
+    forward_predictions.append(initial_state_x0)  # Start with initial conditions
+    
+    # Iterate through time steps
+    for i in range(len(trajectory_times) - 1):
+        # Use the most recent prediction
+        inp = forward_predictions[-1].unsqueeze(0)  # Add batch dimension
+        model.dnn.eval()
+
+        # Predict using the model
+        ut, _ = model.predict(inp)
+        
+        # Ensure the output is a PyTorch tensor
+        if not isinstance(ut, torch.Tensor):
+            ut = torch.tensor(ut, dtype=dtype, device='cpu')
+        
+        if torch.any(torch.abs(ut) > 1e6):
+            print(f"[DEBUG] Explosion at step {i}, state={ut.detach().cpu().numpy()}")
+            break
+
+        # === Sanity checks ===
+        if torch.any(torch.isnan(ut)) or torch.any(torch.isinf(ut)):
+            print(f"[DEBUG] NaN/Inf at step {i}, state={forward_predictions[-1].detach().cpu().numpy()}")
+            break
+
+        if torch.any(ut < 0):
+            print(f"[DEBUG] Negative values at step {i}, state={ut.detach().cpu().numpy()}")
+            break
+        # Append predictions to the forward list
+        forward_predictions.append(ut.squeeze())
+        
+    # Stack predictions into a single tensor
+    forward_predictions_tensor = torch.stack(forward_predictions)
+
+    return forward_predictions_tensor, trajectory_times
+
+def compute_jacobians(model, nd_trajectory, nd_ntot, return_dimensional=False,
+                      dtype=torch.float32, device='cpu'):
+    """
+    Compute Jacobians of model.dnn along a given ND trajectory.
+    Returns ND Jacobians by default, optionally dimensional.
+    """
+    model.dnn.eval()
+
+    # Append ones column for bias/time feature
+    state_matrix_nd = torch.as_tensor(nd_trajectory, dtype=dtype, device=device)
+    ones_column = torch.ones((state_matrix_nd.shape[0], 1), dtype=dtype, device=device)
+    state_matrix_nd = torch.cat([state_matrix_nd, ones_column], dim=1)
+
+    jacobians = []
+    for state in state_matrix_nd:
+        F_nd = torch.autograd.functional.jacobian(lambda x: model.dnn(x), state)
+        zero_row = torch.zeros((1, F_nd.shape[1]), dtype=F_nd.dtype, device=F_nd.device)
+        F_nd = torch.cat([F_nd, zero_row], dim=0)
+
+        if return_dimensional:
+            # Ensure nd_ntot is a vector
+            if np.isscalar(nd_ntot) or (isinstance(nd_ntot, torch.Tensor) and nd_ntot.ndim == 0):
+                nd_ntot_vec = torch.full((F_nd.shape[0]-1,), float(nd_ntot), dtype=dtype, device=device)
+            else:
+                nd_ntot_vec = torch.as_tensor(nd_ntot, dtype=dtype, device=device)
+        
+            D = torch.diag(nd_ntot_vec)
+            D_inv = torch.linalg.inv(D)
+        
+            # Only scale the state block (exclude bias row/col)
+            F_dim = F_nd.clone()
+            F_dim[:-1, :-1] = D @ F_nd[:-1, :-1] @ D_inv
+            F_nd = F_dim
+
+        # print(F_nd)
+        jacobians.append(F_nd.squeeze(0))
+
+    return jacobians
+
+# TLM Function
+def propagate_tlm(precomputed_jacobians, tl_x0, forcing_matrix_tlm, 
+                  num_states, num_features, dtype, device):
+    predicted_tlms = torch.zeros((num_states, num_features), dtype=dtype, device=device)
+
+    # initial perturbation with bias
+    initial_perturbation = torch.cat([
+        torch.as_tensor(tl_x0, dtype=dtype, device=device),
+        torch.tensor([0.0], dtype=dtype, device=device)
+    ])
+    predicted_tlms[0] = initial_perturbation
+
+    for i in range(1, num_states):
+        jacobian = precomputed_jacobians[i-1]
+        updated_perturbation = predicted_tlms[i-1] + forcing_matrix_tlm[i-1]
+        predicted_tlms[i] = torch.matmul(jacobian, updated_perturbation)
+
+    return predicted_tlms
+
+# Adjoint Function
+def propagate_adjoint(precomputed_jacobians, frc_ad_np, num_states,
+                      num_features, dtype, device, lambda_T=None):
+    """
+    Propagate adjoint backwards (PINN version).
+
+    If lambda_T is provided, uses it as terminal condition.
+    Otherwise, runs forcing-driven, zero-terminal adjoint.
+    """
+    forcing_matrix = torch.tensor(frc_ad_np, dtype=dtype, device=device)
+    forcing_matrix_reversed = forcing_matrix.flip(dims=[0])
+
+    # adjoint is only 3D (ignore bias dimension)
+    predicted_ad = torch.zeros((num_states, 3), dtype=dtype, device=device)
+
+    if lambda_T is not None:
+        # set terminal condition directly
+        predicted_ad[-1, :len(lambda_T)] = torch.as_tensor(lambda_T, dtype=dtype, device=device)
+        # integrate backward
+        for i in reversed(range(num_states-1)):
+            jacobian_3x3 = precomputed_jacobians[i][:3, :3]  # ignore bias
+            predicted_ad[i] = torch.matmul(jacobian_3x3.T, predicted_ad[i+1]) + forcing_matrix[i]
+    else:
+        # zero-terminal, forcing-driven (old behavior)
+        for i in range(num_states - 1):
+            jacobian_3x3 = precomputed_jacobians[num_states - 1 - i][:3, :3]  # ignore bias
+            predicted_ad_with_forcing = predicted_ad[i] + forcing_matrix_reversed[i]
+            predicted_ad[i + 1] = torch.matmul(jacobian_3x3.T, predicted_ad_with_forcing)
+        predicted_ad = predicted_ad.flip(dims=[0])
+
+    return predicted_ad
