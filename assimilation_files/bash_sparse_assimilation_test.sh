@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Define variables
-SCRIPT_NAME="field_informed_assimilation_test.py"
-PID_FILE="field_informed_assimilation_test.pid"
-LOGFILE="field_informed_assimilation_test_$(date +'%Y%m%d_%H%M%S').log"
+SCRIPT_NAME="sparse_assimilation_test.py"
+PID_FILE="sparse_assimilation_test.pid"
+LOGFILE="sparse_assimilation_test_$(date +'%Y%m%d_%H%M%S').log"
 
 
 # Function to start the job

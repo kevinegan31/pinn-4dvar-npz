@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Define variables
-SCRIPT_NAME="irregular_sparse_assimilation_test.py"
-PID_FILE="irregular_sparse_assimilation_test.pid"
-LOGFILE="irregular_sparse_assimilation_test_$(date +'%Y%m%d_%H%M%S').log"
+SCRIPT_NAME="dense_two_samples_per_day_test.py"
+PID_FILE="dense_two_samples_per_day_test.pid"
+LOGFILE="dense_two_samples_per_day_test_$(date +'%Y%m%d_%H%M%S').log"
 
 
 # Function to start the job
