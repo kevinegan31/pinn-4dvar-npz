@@ -27,6 +27,15 @@ def calculate_rmse(actual, predicted):
     rmse = np.sqrt(np.mean(residuals ** 2))
     return rmse
 
+# Define a function to calculate relative error
+def calculate_rel_error(actual, predicted):
+    with np.errstate(divide='ignore', invalid='ignore'):  # Ignore division by zero warnings
+        relative_error = np.abs(predicted - actual) / actual  # Relative Error
+        relative_error = np.where(np.isnan(relative_error) | np.isinf(relative_error), 0, relative_error)  # Handle division by zero or NaN cases
+    
+    rel_error = np.mean(relative_error)
+    return rel_error
+
 def calculate_interval_rmse(actuals, predictions, total_intervals):
     rmse_N = []
     rmse_P = []
