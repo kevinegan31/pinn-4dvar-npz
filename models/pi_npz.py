@@ -1,6 +1,7 @@
 '''Pytorch Lightning module for training the NPZ model'''
 # Import necessary libraries
 import torch
+import numpy as np
 from torch import nn
 import lightning as pl
 from collections import OrderedDict
