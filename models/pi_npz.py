@@ -181,7 +181,7 @@ def forward_pinn(model, initial_state, nd_ntot, truth_t):
 
 ### PINN FUNCTIONS -----------------------------------------
 # Forward Model PINN (Uses PyTorch tensors throughout)
-def forward_pinn_assimilation(model, nd_initial_state, trajectory_times):
+def forward_pinn_assimilation(model, nd_initial_state, trajectory_times, dtype):
     # Initialize predictions list
     forward_predictions = []
     initial_state_x0 = nd_initial_state  # Non-dimensionalized initial state
