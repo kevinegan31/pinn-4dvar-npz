@@ -38,7 +38,7 @@ SEED = int(os.getenv('SEED', '1234'))
 seed_everything(SEED, workers=True)
 
 # Wandb API key
-os.environ["WANDB_API_KEY"] = "afbdb23b998f8a00b04076885fa26f4ec70f0a16"
+os.environ["WANDB_API_KEY"] = ### ADD WANDB KEY HERE ###
 
 # Ensure directory exists ----------------------------------------------
 def ensure_dir(directory):

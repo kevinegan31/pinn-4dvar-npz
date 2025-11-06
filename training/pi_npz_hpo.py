@@ -43,7 +43,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 seed_everything(1234, workers=True)  # Replace 1234 with your preferred seed value
 
 # Wandb API key
-os.environ["WANDB_API_KEY"] = "afbdb23b998f8a00b04076885fa26f4ec70f0a16"
+os.environ["WANDB_API_KEY"] = ### ADD WANDB KEY HERE ###
 
 # Ensure directory exists ----------------------------------------------
 def ensure_dir(directory):
