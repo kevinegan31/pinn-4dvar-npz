@@ -58,7 +58,7 @@ LEARNING_RATE = float(os.getenv('LEARNING_RATE', '0.005'))
 # Environment variables
 NEPOCH_ADAM = int(os.getenv('NEPOCH_ADAM', '1000')) #100 #int(os.getenv('NEPOCH_ADAM', '100'))
 ACTIVATION_FUNCTION = os.getenv('ACTIVATION_FUNCTION', 'gelu')  # Keep as a string
-CSV_PATH = os.getenv('CSV_PATH', './current_rk4_random_states_100000_df.csv')
+CSV_PATH = os.getenv('CSV_PATH', './data/training_validation_data/npz_training_set.csv')
 stability_threshold = float(os.getenv('STABILITY_THRESHOLD', '0.9'))  # e.g., 0.95 for 95% skill
 batch_size = int(os.getenv('BATCH_SIZE', '2048'))
 # Map activation function names to PyTorch classes
@@ -93,8 +93,7 @@ if __name__ == '__main__':
     print("Loading and Running Franks...")
     sys.stdout.flush()
     # Start with the rollout holdout data
-    # rollout_df = pd.read_parquet("/share/tempest2/egank31/pinn_test_data/rollout_holdout_1500.parquet")
-    rollout_df = pd.read_csv("./npz_70far_30near_7_days_holdout_set.csv")
+    rollout_df = pd.read_csv("./data/training_validation_data/npz_holdout_set.csv")
     rollout_ics = rollout_df[['N', 'P', 'Z']].values
     # Constants
     Vm_franks, ks_franks, m_franks, gamma_franks, Rm_franks, ivlev_franks, q_franks = 2, 1, 0.1, 0.3, 1.5, 1, 0.2

@@ -278,7 +278,7 @@ def objective(config, x, full_dataset_loader, batch_size,
 # Environment variables
 NEPOCH_ADAM = int(os.getenv('NEPOCH_ADAM', '1000')) #100 #int(os.getenv('NEPOCH_ADAM', '100'))
 ACTIVATION_FUNCTION = os.getenv('ACTIVATION_FUNCTION', 'gelu')  # Keep as a string
-CSV_PATH = os.getenv('CSV_PATH', './current_rk4_random_states_100000_df.csv') #'./current_discretized_results_num_ICs_1000_484290_df.csv' #os.getenv('CSV_PATH', './current_discretized_results_num_ICs_1000_484290_df.csv')
+CSV_PATH = os.getenv('CSV_PATH', './data/training_validation_data/npz_training_set.csv')
 NUM_RSAMPLES = int(os.getenv('NUM_RSAMPLES', '100')) #15 #int(os.getenv('NUM_RSAMPLES', '15'))
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '128'))
 STABILITY_THRESHOLD = float(os.getenv('STABILITY_THRESHOLD', '0.9'))  # e.g., 0.95 for 95% skill
@@ -345,7 +345,7 @@ if __name__ == '__main__':
     sys.stdout.flush()
     # Start with the rollout holdout data
     # Update the path as necessary
-    rollout_df = pd.read_csv("./npz_70far_30near_7_days_holdout_set.csv")
+    rollout_df = pd.read_csv("./data/training_validation_data/npz_holdout_set.csv")
     rollout_ics = rollout_df[['N', 'P', 'Z']].values
     # Constants
     Vm_franks, ks_franks, m_franks, gamma_franks, Rm_franks, ivlev_franks, q_franks = 2, 1, 0.1, 0.3, 1.5, 1, 0.2
