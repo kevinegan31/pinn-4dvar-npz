@@ -178,7 +178,6 @@ dtype = torch.float64
 device = torch.device('cpu') # Smaller models/data, running on CPU
 
 # Load the checkpoint file path
-# gelu_checkpoint_path = "../../checkpoints/evolved_states_optuna_trial_0_ntot_500000_nobs_batch_size_64_layers_4_neurons_128_lr_0.001_activation_gelu_lu_1.0_lf_1.0_20_patience_2.9_Nt_10_min.ckpt"
 pi_npz_model_ckpt_name = 'pi_npz_final.ckpt'
 pi_npz_checkpoint_path = f"../model_checkpoints/{pi_npz_model_ckpt_name}"
 
@@ -514,7 +513,7 @@ for i in rk4_dict:
 
 
 # === Save the combined dictionary ===
-joblib.dump(xb_dict, f"/share/tempest2/egank31/assimilation_results/two_samples_per_day_xb_data_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_frozen_params_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+joblib.dump(xb_dict, f"~/data/assimilation_results/two_samples_per_day_xb_data_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_frozen_params_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
 print(f"Xb Data saved - {len(xb_dict)} trajectories computed.")
 # Define background error model
 background_error = np.array([xb_error_N, xb_error_P, xb_error_Z])
@@ -630,7 +629,7 @@ rk4_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky", ba
 rk4_assimilation_results = {key: result for key, result in rk4_assimilation_results_parallel}
 print(f"RK4 Assimilation complete - {len(rk4_assimilation_results)} trajectories computed.")
 
-joblib.dump(rk4_assimilation_results, f"/share/tempest2/egank31/assimilation_results/two_samples_per_day_rk4_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_compressed.pkl")
+joblib.dump(rk4_assimilation_results, f"~/data/assimilation_results/two_samples_per_day_rk4_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_compressed.pkl")
 ### PINN Jacobian Calculation
 # Prepare shared arguments
 pi_npz_shared_args = dict(
@@ -667,4 +666,4 @@ sys.stdout.flush()
 # Rebuild dict
 pi_npz_assimilation_results = {key: result for key, result in pi_npz_assimilation_results_parallel}
 print(f"PI-NPZ Assimilation complete - {len(pi_npz_assimilation_results)} trajectories computed.")
-joblib.dump(pi_npz_assimilation_results, f"../data/assimilation_results/two_samples_per_day_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+joblib.dump(pi_npz_assimilation_results, f"~/data/assimilation_results/two_samples_per_day_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
