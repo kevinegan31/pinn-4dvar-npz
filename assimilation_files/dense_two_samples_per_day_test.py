@@ -663,7 +663,147 @@ print(f"Jacobian Matrix Run time for all matrices (parallel): "
       f"{pi_npz_jacobian_end_time - pi_npz_jacobian_start_time:.2f}s")
 sys.stdout.flush()
 
+# PI-NPZ Assimilation
+def run_pinn_assimilation_for_trajectory(
+    trajectory_key, xb_data, jacobians,
+    model_name, model,
+    *,  # everything after this must be keyword
+    device, dtype, nd_ntot,
+    obs_idx, obs_type, obs_time,
+    obs_value, obs_error,
+    B0, truth_t, nobs, num_cg_iterations):
+    
+    # Print progress every 1000 samples (rank-independent)
+    if trajectory_key % 1000 == 0:
+        print(f"Completed assimilation for {trajectory_key} trajectories.")
+
+    xb_0 = xb_data["perturbed_initial_state"]
+    xb_model = xb_data[f"{model_name}_background_state"]   # <-- flexible
+    truth   = xb_data["truth"]
+    
+    jo_b_pinn = np.sum(((xb_model[obs_idx, obs_type] - obs_value) ** 2) / obs_error)
+    jb_b_pinn = np.sum(((xb_model[0, :] - xb_0) ** 2) / np.diag(B0))
+    J_total_b_pinn = 0.5 * jb_b_pinn + 0.5 * jo_b_pinn
+
+    cg_iter_count = [0]
+
+    def callback(xk):
+        cg_iter_count[0] += 1
+
+    # Compute innovation vector (obs - background)
+    b = obs_value - xb_model[obs_idx, obs_type]
+
+    innerloop_pinn = make_innerloop_pinn(
+        precomputed_jacobians=jacobians,
+        state_matrix_nd_tensor=xb_model,
+    )
+    np_dtype = np.float64
+    # Wrap innerloop in a LinearOperator
+    A_orig = LinearOperator(
+        shape=(nobs, nobs),
+        matvec=innerloop_pinn,
+        dtype=np_dtype
+    )
+    
+    start = time.time()
+    x_orig, exit_code = cg(
+        A_orig,
+        b,
+        rtol=1e-13,
+        maxiter=num_cg_iterations,
+        callback=callback
+    )
+    pinn_total_time = time.time() - start
+
+    # Step 1: Forcing aligned with model time (already 3D)
+    tfrc, frc = obs_forcing(obs_time, obs_type, x_orig, truth_t)  # frc shape = (num_states, 3)
+    frc_ad_np = frc   # adjoint forcing is 3D
+
+    num_states = xb_model.shape[0]
+    
+    # Step 2: Run adjoint with PINN (3D Jacobians, 3D forcing)
+    ad_pinn = propagate_adjoint(
+        precomputed_jacobians=[J[:3, :3] for J in jacobians],  # 3x3 Jacobians
+        frc_ad_np=frc_ad_np,
+        num_states=num_states,
+        num_features=3,   # adjoint dimension = 3
+        dtype=dtype,
+        device=device
+    )
+    
+    # Step 3: Background covariance application (state correction)
+    z_pinn = B0.dot(ad_pinn.T).T    # (num_states, 3)
+    z_pinn = z_pinn[0, :]           # extract initial-time correction
+    
+    # Step 4: Update analysis initial condition
+    xa_0 = torch.tensor((xb_0 + z_pinn)/nd_ntot, device=device, dtype=dtype)
+    xa_pinn_nd, _ = forward_pinn(model=model, nd_initial_state=xa_0, trajectory_times=truth_t)
+    xa_pinn = xa_pinn_nd.detach().numpy() * nd_ntot
+
+    jo_a_pinn = np.sum(((xa_pinn[obs_idx, obs_type] - obs_value)**2) / obs_error)
+    jb_a_pinn = np.sum(((xa_pinn[0, :] - xb_0) ** 2) / np.diag(B0))
+    J_total_a_pinn = 0.5 * jb_a_pinn + 0.5 * jo_a_pinn
+
+    misfitb_pinn = np.sqrt(np.sum((truth - xb_model) ** 2))
+    misfita_pinn = np.sqrt(np.sum((truth - xa_pinn) ** 2))
+    improvement_pinn = 100 * ((misfitb_pinn - misfita_pinn) / misfitb_pinn)
+    
+    pct_drop_J  = safe_pct_drop(J_total_b_pinn, J_total_a_pinn)
+    pct_drop_Jo = safe_pct_drop(jo_b_pinn, jo_a_pinn)
+    pct_drop_Jb = safe_pct_drop(jb_b_pinn, jb_a_pinn)
+    
+    result_dict = {
+        f"xa_{model_name}": xa_pinn,
+        f"xb_{model_name}": xb_model,
+        f"jo_b_{model_name}": jo_b_pinn,
+        f"jb_b_{model_name}": jb_b_pinn,
+        f"J_total_b_{model_name}": J_total_b_pinn,
+        f"jo_a_{model_name}": jo_a_pinn,
+        f"jb_a_{model_name}": jb_a_pinn,
+        f"J_total_a_{model_name}": J_total_a_pinn,
+        f"{model_name}_misfitb": misfitb_pinn,
+        f"{model_name}_misfita": misfita_pinn,
+        f"Improvement_{model_name}": improvement_pinn,
+        f"pct_drop_J_{model_name}": pct_drop_J,
+        f"pct_drop_Jo_{model_name}": pct_drop_Jo,
+        f"pct_drop_Jb_{model_name}": pct_drop_Jb,
+        f"cg_iterations_{model_name}": cg_iter_count[0],
+        f"converged_{model_name}": int(exit_code == 0),
+        f"exit_code_{model_name}": exit_code,
+        f"{model_name}_time": pinn_total_time,
+    }
+
+    return trajectory_key, result_dict
+   
+pi_npz_shared_args = {
+    "dtype": dtype,
+    "nd_ntot": nd_ntot,
+    "obs_time": obs_time,
+    "obs_type": obs_type,
+    "obs_value": obs_value,
+    "obs_error": obs_error,
+    "nobs": nobs,
+    "B0": B0,
+    "model_name": "pi_npz",
+    "model": pi_npz_model,
+    "device": device,
+    "truth_t": truth_t,
+    "obs_idx": obs_idx,
+    "num_cg_iterations": num_cg_iterations
+    
+}
+pi_npz_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky")(
+    delayed(run_pinn_assimilation_for_trajectory)(
+        key,
+        xb_dict[key],
+        pi_npz_jacobians_per_trajectory[key],
+        **pi_npz_shared_args
+    )
+    for key in xb_dict.keys()
+)
+
 # Rebuild dict
 pi_npz_assimilation_results = {key: result for key, result in pi_npz_assimilation_results_parallel}
 print(f"PI-NPZ Assimilation complete - {len(pi_npz_assimilation_results)} trajectories computed.")
 joblib.dump(pi_npz_assimilation_results, f"~/data/assimilation_results/two_samples_per_day_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+
