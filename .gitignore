@@ -206,3 +206,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+*.pid
+*.log
+wandb/
+runtime_logs/
+nn_npz_*_checkpoints_*/
