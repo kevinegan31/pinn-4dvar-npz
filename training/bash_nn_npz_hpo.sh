@@ -2,9 +2,9 @@
 
 # Define variables
 SCRIPT_NAME="nn_npz_hpo.py"
-PID_FILE="nn_npz_hpo_training.pid"
+PID_FILE="nn_log_files/nn_npz_hpo_training.pid"
 DATASET_IDX=$(printf "%02d" ${2:-1})
-LOGFILE="nn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
+LOGFILE="nn_log_files/nn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 
 # Set environment variables
 export CUDA_VISIBLE_DEVICES=0
