@@ -1,22 +1,17 @@
 #!/bin/bash
 
 # Define variables
-SCRIPT_NAME="nn_npz_hpo.py"
+SCRIPT_NAME="training/nn_npz_hpo.py"
 PID_FILE="nn_npz_hpo_training.pid"
+
 DATASET_IDX=$(printf "%02d" ${2:-1})
 LOGFILE="nn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 
-# Set environment variables
+# Use physical GPU 0 only
 export CUDA_VISIBLE_DEVICES=0
+
 export ACTIVATION_FUNCTION='gelu'
-
-# Default dataset index = 01 if none provided
-if [ -z "$DATASET_IDX" ]; then
-  DATASET_IDX="01"
-fi
-
-# NOTE: Update this path to your own dataset location before running
-export CSV_PATH="./npz_training_set.csv"
+export CSV_PATH="./data/training_validation_data/npz_training_set.csv"
 export DATASET_IDX=$DATASET_IDX
 
 # Function to start the job
@@ -26,7 +21,7 @@ start_job() {
         PID=$(cat "$PID_FILE")
         if ps -p $PID > /dev/null 2>&1; then
             echo "Error: A training job is already running with PID $PID."
-            echo "Stop it first using: ./run_pinn.sh stop"
+            echo "Stop it first using: ./training/bash_nn_npz_hpo.sh stop"
             exit 1
         else
             echo "Warning: Stale PID file found. Removing..."
@@ -40,7 +35,7 @@ start_job() {
 
     echo "Training started in the background."
     echo "Logs: $LOGFILE"
-    echo "To stop the process, use: ./run_pinn.sh stop"
+    echo "To stop the process, use: ./training/bash_nn_npz_hpo.sh stop"
 }
 
 # Function to stop the job
