@@ -17,21 +17,21 @@ import shutil
 import os
 import sys
 sys.path.append('./models/')
-from pi_npz_model import DNN, PhysicsInformedNN, forward_pinn
+from nn_npz import DNN, NN, forward_nn
 from traditional_npz import run_rk4_for_initial_conditions
 sys.path.append('./utils/')
-from additional_files import compute_survival_metrics, read_and_preprocess_data, calculate_global_rmse
+from additional_files import (
+    compute_survival_metrics,
+    read_and_preprocess_data,
+    calculate_global_rmse
+)
 
 import torch
 from torch import nn
 import numpy as np
 import pandas as pd
-from collections import OrderedDict
 import datetime
 import random
-# Initialize Distributed Processing Group
-import torch.distributed as dist
-from torch.distributed import init_process_group
 
 import optuna
 import csv
@@ -41,9 +41,6 @@ torch.set_num_threads(1)
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 seed_everything(1234, workers=True)  # Replace 1234 with your preferred seed value
-
-# Wandb API key
-os.environ["WANDB_API_KEY"] = ### ADD WANDB KEY HERE ###
 
 # Ensure directory exists ----------------------------------------------
 def ensure_dir(directory):
@@ -57,7 +54,7 @@ timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 dt_object = datetime.datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
 formatted_timestamp = dt_object.strftime("%Y_%m_%d")
 # Checkpoint callback to save the best model
-checkpoint_dir = f"./bayesopt_frozen_params_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes"
+checkpoint_dir = f"./nn_npz_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes"
 
 # Check if the directory exists, and if not, create it
 ensure_dir(checkpoint_dir)
@@ -76,41 +73,22 @@ def objective(config, x, full_dataset_loader, batch_size,
     num_layers = config["num_layers"]
     num_neurons = config["num_neurons"]
     learning_rate = config["learning_rate"]
-    lambda_u = 1.0
-    lambda_f = 1.0
     # Parameters Dictionary
     dtype = torch.float32
-    t_scale = 1.0
-    alpha_tilde = 1.2164 * t_scale
-    beta_tilde = 1.2795 * X_REF
-    b_tilde = 0.1 * t_scale
-    c_tilde = 0.2 * t_scale
-    e_tilde = 0.5 * t_scale * X_REF
-    f_tilde = 0.5 * t_scale * X_REF
-    params_dict = {
-    'alpha_tilde': torch.tensor([alpha_tilde], dtype=dtype),
-    'beta_tilde': torch.tensor([beta_tilde], dtype=dtype),
-    'b_tilde': torch.tensor([b_tilde], dtype=dtype),
-    'c_tilde': torch.tensor([c_tilde], dtype=dtype),
-    'e_tilde': torch.tensor([e_tilde], dtype=dtype),
-    'f_tilde': torch.tensor([f_tilde], dtype=dtype),
-    }
     # Model
-    model = PhysicsInformedNN(DNN, num_layers, num_neurons,
-                              ACTIVATION_FUNCTION_CLASS, params_dict,
-                              lambda_u, lambda_f, learning_rate, dtype=dtype)
+    model = NN(DNN, num_layers, num_neurons,
+               ACTIVATION_FUNCTION_CLASS,
+               learning_rate, dtype=dtype)
     # Initialize WandbLogger
     n_obs = len(x)
     wandb_logger = WandbLogger(
-        project=f"hpo_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs",   # Replace with your WandB project name
+        project=f"hpo_nn_npz_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs",   # Replace with your WandB project name
         name=f"run_{formatted_timestamp}",  # Unique name for each run using timestamp
         log_model=False,
     )
     hparams = {
         "activation_function": ACTIVATION_FUNCTION,
         "n_obs": n_obs,
-        "lambda_u": lambda_u,
-        "lambda_f": lambda_f,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
         "num_layers": num_layers,
@@ -118,7 +96,7 @@ def objective(config, x, full_dataset_loader, batch_size,
         "n_epochs": NEPOCH_ADAM,
         "Nt": X_REF
     }
-    checkpoint_name = f'hpo_optuna_trial_{trial.number}_ntot_{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_lu_{lambda_u}_lf_{lambda_f}_{NEPOCH_ADAM}_epochs_{X_REF}_Nt_{NUM_MINUTES}_min'
+    checkpoint_name = f'hpo_nn_npz_trial_{trial.number}_ntot_{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{NEPOCH_ADAM}_epochs_{X_REF}_Nt_{NUM_MINUTES}_min'
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
@@ -139,7 +117,7 @@ def objective(config, x, full_dataset_loader, batch_size,
     trainer = pl.Trainer(max_epochs=NEPOCH_ADAM,
                          accelerator='gpu',
                          devices=num_gpus,
-                         strategy='ddp',#if num_gpus > 1 else "auto",
+                         strategy='auto',
                          deterministic=True,
                          logger=wandb_logger,
                          callbacks=[checkpoint_callback, lr_monitor],
@@ -184,14 +162,14 @@ def objective(config, x, full_dataset_loader, batch_size,
             model.eval()
             rollout_tensor = torch.tensor(rollout_ics, dtype=torch.float32, device=model.device)
 
-            def run_forward_pinn_single_safe(x0, model, nd_ntot, times):
-                pred = forward_pinn(model, x0, nd_ntot, times).detach().cpu().numpy()
+            def run_forward_nn_single_safe(x0, model, nd_ntot, times):
+                pred = forward_nn(model, x0, nd_ntot, times).detach().cpu().numpy()
                 if not np.isfinite(pred).all():
                     return np.full((len(times), 3), np.nan)  # ensure correct shape
                 return pred
 
             forward_predictions_list = Parallel(n_jobs=20)(
-                delayed(run_forward_pinn_single_safe)(x0, model, X_REF, times) for x0 in rollout_tensor
+                delayed(run_forward_nn_single_safe)(x0, model, X_REF, times) for x0 in rollout_tensor
             )
             # Align exactly with all franks trajectories
             forward_actuals = [np.array(gt) for gt in franks_trajectories]  # No slicing!
@@ -296,11 +274,15 @@ if ACTIVATION_FUNCTION not in activation_mapping:
 ACTIVATION_FUNCTION_CLASS = activation_mapping[ACTIVATION_FUNCTION]  # Class for model
 
 # Number of GPUs
-num_gpus = torch.cuda.device_count()
-if num_gpus < 1:
-    raise ValueError("No GPUs available for training")
+num_gpus = 1
 
-print(f"Number of GPUs: {num_gpus}")
+if torch.cuda.device_count() < num_gpus:
+    raise ValueError(
+        f"Requested {num_gpus} GPU, but only "
+        f"{torch.cuda.device_count()} available."
+    )
+
+print(f"Number of GPUs used: {num_gpus}")
 sys.stdout.flush()
 
 def bayesian_optimization(x, full_dataset_loader, batch_size,
@@ -394,7 +376,7 @@ if __name__ == '__main__':
     print(f"Total GPU hours: {total_gpu_hours:.2f}")
     sys.stdout.flush()
     # Save to CSV
-    summary_log_path = f"./runtime_logs/pi_npz_hpo_total_runtime_{formatted_timestamp}.csv"
+    summary_log_path = f"./runtime_logs/nn_npz_hpo_total_runtime_{formatted_timestamp}.csv"
     os.makedirs("./runtime_logs", exist_ok=True)
     with open(summary_log_path, mode='w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=[
