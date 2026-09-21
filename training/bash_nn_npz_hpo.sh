@@ -1,22 +1,26 @@
 #!/bin/bash
 
+# Always run from repository root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$REPO_ROOT" || exit 1
+
 # Define variables
-SCRIPT_NAME="nn_npz_hpo.py"
-PID_FILE="nn_log_files/nn_npz_hpo_training.pid"
+SCRIPT_NAME="training/nn_npz_hpo.py"
+
+LOG_DIR="training/nn_hpo_log_files"
+mkdir -p "$LOG_DIR"
+
+PID_FILE="$LOG_DIR/nn_npz_hpo_training.pid"
+
 DATASET_IDX=$(printf "%02d" ${2:-1})
-LOGFILE="nn_log_files/nn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
+LOGFILE="$LOG_DIR/nn_training_hpo_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 
-# Set environment variables
+# Use physical GPU 0 only
 export CUDA_VISIBLE_DEVICES=0
+
 export ACTIVATION_FUNCTION='gelu'
-
-# Default dataset index = 01 if none provided
-if [ -z "$DATASET_IDX" ]; then
-  DATASET_IDX="01"
-fi
-
-# NOTE: Update this path to your own dataset location before running
-export CSV_PATH="./npz_training_set.csv"
+export CSV_PATH="./data/training_validation_data/npz_training_set.csv"
 export DATASET_IDX=$DATASET_IDX
 
 # Function to start the job
