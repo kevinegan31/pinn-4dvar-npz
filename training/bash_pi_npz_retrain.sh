@@ -2,7 +2,7 @@
 
 # Define variables
 SCRIPT_NAME="pi_npz_retrain.py"
-PID_FILE="pi_npz_training_retrain_opt.pid"
+PID_FILE="pi_npz_training_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').pid"
 DATASET_IDX=$(printf "%02d" ${2:-1})
 LOGFILE="pi_npz_training_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 
