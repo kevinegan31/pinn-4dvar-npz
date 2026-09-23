@@ -1,114 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 import os
 import sys
-import csv
+import time
 import datetime
-
-import numpy as np
-from scipy.integrate import odeint
-from scipy.sparse.linalg import LinearOperator, cg
-
-from pytorch_lightning import seed_everything
-
-
-import importlib
-import subprocess
-import sys
+import warnings
 import joblib
 
-def install_and_import(package):
-    try:
-        importlib.import_module(package)
-    except ImportError:
-        print(f"{package} not found, installing it now...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-    finally:
-        globals()[package] = importlib.import_module(package)
-
-# Standard library imports
-import os
-import time
-import random
-import copy
-import multiprocessing
-import itertools
-import warnings
-from collections import OrderedDict
-from concurrent.futures import ProcessPoolExecutor
-import concurrent.futures
-import json
-import re
-# Third-party imports
-third_party_packages = ['numpy', 'pandas', 'matplotlib', 'scipy', 'sklearn', 'torch']
-
-for package in third_party_packages:
-    install_and_import(package)
-
-# Specific imports from installed packages
-import pandas as pd
+import numpy as np
 import torch
+
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
-import torch.distributed as dist
-import torch.multiprocessing as mp
-
-from pytorch_lightning import seed_everything
-from torch.utils.data import random_split, DataLoader, TensorDataset
-from lightning.pytorch import Trainer
-from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
-
+from scipy.sparse.linalg import LinearOperator, cg
 from joblib import Parallel, delayed
-from copy import deepcopy
-# Local imports
-# Add the directory containing model_utils.py to the Python path
-sys.path.append('../models/')
-from pi_npz import DNN as pi_npz_DNN
-from pi_npz import PhysicsInformedNN
-from pi_npz import forward_pinn_assimilation as forward_pinn, compute_jacobians, propagate_tlm, propagate_adjoint, make_innerloop_pinn
-from traditional_npz import npz_nl, rk4, run_rk4_for_initial_conditions, npz_tl, rk4_ad
 
+# Repository paths
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 
-def make_innerloop(xb_rk4, timesteps, background_error_rk4):
-    def innerloop(w):
-        # print("\n--- INNERLOOP ---")
-        # print("Input w:", w[:5])
-        # Step 1: Construct full forcing array for adjoint model
-        frc_ad = np.zeros((len(timesteps), 3))  # Full time grid
-        frc_ad[obs_idx, obs_type] = w         # Inject w into observed components
-        tfrc_ad = timesteps
-        # print("Adjoint forcing (first 3):", frc_ad[:3])
-        
-        # Step 2: Run adjoint model
-        ad_x0 = np.zeros(3)
-        ad = rk4_ad(npz_nl, npz_ad, xb_rk4, ad_x0, timesteps, tfrc_ad, frc_ad, phi)
-        # print("Adjoint final state:", ad[-1])
-    
-        # Step 3: Apply background covariance
-        d = background_error_rk4.dot(ad.T).T
+MODEL_DIR = os.path.join(REPO_ROOT, "models")
+OUTPUT_DIR = os.path.join(
+    REPO_ROOT,
+    "data",
+    "nn_assimilation_results"
+)
 
-        # print("After background covariance (first state):", d[0])
-    
-        # Step 4: Construct full forcing array for tangent-linear model
-        frc_tl = np.zeros((len(timesteps), 3))
-        frc_tl[obs_idx, obs_type] = d[obs_idx, obs_type]
-        tfrc_tl = timesteps
-    
-        # Step 5: Run tangent-linear model
-        d_tl = rk4_tl(npz_nl, npz_tl, xb_rk4, d[0, :], timesteps, tfrc_tl, frc_tl, phi)
-        # print("TLM final state:", d_tl[-1])
-    
-        # Step 6: Final projection and return
-        result = d_tl[obs_idx, obs_type] + obs_error * w
-        # print("Output (first 5):", result[:5])
-        
-        return result
-    return innerloop
+sys.path.append(MODEL_DIR)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+from nn_npz import (
+    DNN as nn_npz_DNN,
+    NN,
+    forward_nn_assimilation as forward_nn,
+    compute_jacobians,
+    propagate_tlm,
+    propagate_adjoint,
+)
 
-def make_innerloop_pinn(precomputed_jacobians, state_matrix_nd_tensor):
-    def innerloop_pinn(w):
+from traditional_npz import npz_nl, rk4
+
+def make_innerloop_nn(precomputed_jacobians, state_matrix_nd_tensor):
+    def innerloop_nn(w):
         num_states = state_matrix_nd_tensor.shape[0]
         num_features_tlm = state_matrix_nd_tensor.shape[1] + 1
         num_features_adj = state_matrix_nd_tensor.shape[1]
@@ -150,7 +83,7 @@ def make_innerloop_pinn(precomputed_jacobians, state_matrix_nd_tensor):
         # --- Step 6: final projection ---
         return predicted_tlms[obs_idx, obs_type] + obs_error * w
 
-    return innerloop_pinn
+    return innerloop_nn
 
 def obs_forcing(otime, otype, frc_vals, time_step):
     """
@@ -170,65 +103,57 @@ def obs_forcing(otime, otype, frc_vals, time_step):
 
     return time_step, frc_aligned
 
+warnings.filterwarnings('ignore')
+
+torch.set_num_threads(1)
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 # Set the seed for reproducibility
 np.random.seed(42)
 ### Load in Network ----------------------
+# num_threads = torch.get_num_threads()
+# torch.set_num_threads(num_threads)
+
 # CPU device
 dtype = torch.float64
 device = torch.device('cpu') # Smaller models/data, running on CPU
+nd_ntot = 2.75
 
 # Load the checkpoint file path
-pi_npz_model_ckpt_name = 'pi_npz_final.ckpt'
-pi_npz_checkpoint_path = f"../model_checkpoints/{pi_npz_model_ckpt_name}"
+nn_npz_checkpoint_path = os.path.join(
+    REPO_ROOT,
+    "model_checkpoints",
+    "nn_npz_final.ckpt",
+)
 
-t_scale = 1.0
-nd_ntot = 2.75
-alpha_tilde = 1.2164 * t_scale
-beta_tilde = 1.2795 * nd_ntot
-b_tilde = 0.1 * t_scale
-c_tilde = 0.2 * t_scale
-e_tilde = 0.5 * t_scale * nd_ntot
-f_tilde = 0.5 * t_scale * nd_ntot
-# Define parameters for GELU model
-params_dict = {
-'alpha_tilde': torch.tensor([alpha_tilde], dtype=dtype),
-'beta_tilde': torch.tensor([beta_tilde], dtype=dtype),
-'b_tilde': torch.tensor([b_tilde], dtype=dtype),
-'c_tilde': torch.tensor([c_tilde], dtype=dtype),
-'e_tilde': torch.tensor([e_tilde], dtype=dtype),
-'f_tilde': torch.tensor([f_tilde], dtype=dtype),
-}
 print("NUM_LAYERS =", os.getenv("NUM_LAYERS"))
-print("NUM_NEURONS =", os.getenv("NUM_NEURONS"))
 NUM_LAYERS = int(os.getenv('NUM_LAYERS', '5'))
-NUM_NEURONS = int(os.getenv('NUM_NEURONS', '384'))
-LEARNING_RATE = float(os.getenv('LEARNING_RATE', '0.006'))
+NUM_NEURONS = int(os.getenv('NUM_NEURONS', '512'))
+LEARNING_RATE = float(os.getenv('LEARNING_RATE', '0.0001'))
 learning_rate_gelu = LEARNING_RATE
 num_layers_gelu = NUM_LAYERS
 num_neurons_gelu = NUM_NEURONS
 activation_function = nn.GELU
 
 # Step 1: Load the checkpoint manually
-pi_npz_checkpoint = torch.load(pi_npz_checkpoint_path, map_location="cpu")
+nn_npz_checkpoint = torch.load(nn_npz_checkpoint_path, map_location="cpu")
 
 # Step 2: Reconstruct the model using the same init args
-pi_npz_model = PhysicsInformedNN(
-    DNN=pi_npz_DNN,
+nn_npz_model = NN(
+    DNN=nn_npz_DNN,
     num_layers=num_layers_gelu,
     num_neurons=num_neurons_gelu,
     activation_function=activation_function,
-    params_dict=params_dict,
-    lambda_u=1,
-    lambda_f=1,
     learning_rate=learning_rate_gelu,
     dtype=dtype
 )
 
 # Step 3: Load the model weights from the checkpoint
-pi_npz_model.load_state_dict(pi_npz_checkpoint["state_dict"])
+nn_npz_model.load_state_dict(nn_npz_checkpoint["state_dict"])
 
 # Step 4: Optional – move to float64
-pi_npz_model = pi_npz_model.to(dtype=dtype, device="cpu")
+nn_npz_model = nn_npz_model.to(dtype=dtype, device="cpu")
 print("Models loaded.")
 sys.stdout.flush()
 # Time Parameters
@@ -329,6 +254,7 @@ initial_guesses_n = np.clip(n0_true + perturbation_N[bg_sample_indices], MIN_GUE
 initial_guesses_p = np.clip(p0_true + perturbation_P[bg_sample_indices], MIN_GUESS_VAL, None)
 initial_guesses = list(zip(initial_guesses_n, initial_guesses_p, initial_guesses_z))
 
+
 # Create obs data -----------------------------------------
 nitrate_std_mg = 0.002 * 14.0067 # High-Sensitivity Nitrate plus Nitrite by Chemiluminescence
 sigma_N = nitrate_std_mg # https://hahana.soest.hawaii.edu/hot/protocols/protocols.html# nitrate + nitrate
@@ -426,45 +352,28 @@ rng = np.arange(nobs)  # Update the range index
 # --- Construct sparse observation matrix ---
 obs_plot_new = np.zeros((len(obs_time), 3))
 obs_plot_new[np.arange(len(obs_time)), obs_type] = obs_value
-### 1. Run RK4 in parallel across CPU cores
-def rk4_worker(i, n0, p0, z0):
-    xb_0 = np.array([n0, p0, z0])
-    start = time.time()
-    xb_rk4 = rk4(npz_nl, xb_0, truth_t, None, 0, phi)
-    end = time.time()
-    duration = end - start
-    return i, xb_0, xb_rk4, duration
 
 num_jobs = int(os.getenv('NUM_JOBS', '4'))
-start_time = time.time()
-rk4_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=10)(
-    delayed(rk4_worker)(i, n, p, z) for i, (n, p, z) in enumerate(initial_guesses)
-)
-end_time = time.time()
-rk4_loop_time = end_time - start_time
-print(f"Running time: {rk4_loop_time:.2f}")
-# Print the number of trajectories computed
-print(f"RK4 Complete - {len(rk4_results)} trajectories computed.")
-# Store intermediate RK4 results for GPU PINN stage
-rk4_dict = {i: {"perturbed_initial_state": xb_0,
-                "background_state": xb_rk4,
-                "run_time": duration}
-            for i, xb_0, xb_rk4, duration in rk4_results}
-
 # === Worker Function ===
-def pinn_worker(i, x0_np, nd_ntot, truth_t):
-    global pi_npz_model  # use global model, don’t pickle it into each worker
-    device = next(pi_npz_model.parameters()).device
+def nn_worker(i, x0_np, nd_ntot, truth_t, total_workers):
+    global nn_npz_model
+    torch.set_num_threads(1)
+    device = next(nn_npz_model.parameters()).device
 
     x0_tensor = torch.tensor(x0_np / nd_ntot, dtype=dtype, device=device)
 
     start = time.time()
-    pred_tensor, _ = forward_pinn(pi_npz_model, x0_tensor, truth_t)
+    pred_tensor, _ = forward_nn(nn_npz_model, x0_tensor, truth_t, dtype)
     pred = pred_tensor.detach().cpu().numpy() * nd_ntot
     end = time.time()
 
-    if i % 1000 == 0:
-        print(f"Completed worker {i}")
+    if (i % 1000 == 0) or (i >= total_workers - 100 and i % 10 == 0) or (i == total_workers - 1):
+        elapsed = end - start
+        print(
+            f"[{datetime.datetime.now().strftime('%H:%M:%S')}] "
+            f"Completed worker {i+1}/{total_workers} "
+            f"({elapsed:.2f}s)"
+        )
         sys.stdout.flush()
 
     return i, x0_np, pred, end - start
@@ -475,45 +384,40 @@ initial_guesses_array = np.array(initial_guesses)  # shape (B, 3)
 start_time = time.time()
 print(f"Start time: {datetime.datetime.fromtimestamp(start_time)}")
 # Spawn processes with model initialized globally
-pi_npz_xb0_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=100)(
-    delayed(pinn_worker)(i, x0_np, nd_ntot, truth_t)
+print("Torch threads per process:", torch.get_num_threads())
+nn_npz_xb0_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=1)(
+    delayed(nn_worker)(i, x0_np, nd_ntot, truth_t, len(initial_guesses_array))
     for i, x0_np in enumerate(initial_guesses_array)
 )
 end_time = time.time()
-pinn_prediction_loop_time = end_time - start_time
-print(f"Running time: {pinn_prediction_loop_time:.2f}")
-print(f"PINN Forward Prediction Complete - {len(pi_npz_xb0_results)} trajectories computed.")
+nn_prediction_loop_time = end_time - start_time
+print(f"Running time: {nn_prediction_loop_time:.2f}")
+print(f"nn Forward Prediction Complete - {len(nn_npz_xb0_results)} trajectories computed.")
 # === Rebuild Dictionary ===
-### PI-NPZ Background Results
-pi_npz_xb0_dict = {
+### NN-NPZ Background Results
+# === Store NN-NPZ background results ===
+xb_dict = {
     i: {
-        "perturbed_initial_state": xb_0,
-        "background_state": pred,
-        "run_time": duration
-        
-    }
-    for i, xb_0, pred, duration in pi_npz_xb0_results
-}
-# === Merge RK4 and PINN results into one dictionary ===
-xb_dict = {}
-
-for i in rk4_dict:
-    xb_dict[i] = {
         "truth": truth,
-        "perturbed_initial_state": rk4_dict[i]["perturbed_initial_state"],
-        "rk4_background_state": rk4_dict[i]["background_state"],
-        "pi_npz_background_state": pi_npz_xb0_dict[i]["background_state"],
-        # "franks_pinn_background_state": franks_pinn_xb0_dict[i]["background_state"],
-        # "reg_nn_background_state": reg_nn_xb0_dict[i]["background_state"],
-        "rk4_run_time": rk4_dict[i]["run_time"],
-        "pi_npz_run_time": pi_npz_xb0_dict[i]["run_time"],
-        # "franks_pinn_run_time": franks_pinn_xb0_dict[i]["run_time"],
-        # "reg_nn_run_time": reg_nn_xb0_dict[i]["run_time"],
+        "perturbed_initial_state": xb_0,
+        "nn_npz_background_state": pred,
+        "nn_npz_run_time": duration,
     }
+    for i, xb_0, pred, duration in nn_npz_xb0_results
+}
 
 
 # === Save the combined dictionary ===
-joblib.dump(xb_dict, f"~/data/assimilation_results/two_samples_per_day_xb_data_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_frozen_params_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+xb_output_path = os.path.join(
+    OUTPUT_DIR,
+    f"two_samples_per_day_nn_npz_xb_data_"
+    f"{NUM_XB0}xb_estimates_"
+    f"min_guess_{MIN_GUESS_VAL}_"
+    f"{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl"
+)
+
+joblib.dump(xb_dict, xb_output_path)
+print(f"Xb data saved to: {xb_output_path}")
 print(f"Xb Data saved - {len(xb_dict)} trajectories computed.")
 # Define background error model
 background_error = np.array([xb_error_N, xb_error_P, xb_error_Z])
@@ -526,124 +430,20 @@ def safe_pct_drop(before, after):
         return np.nan  # or 0.0 if you prefer
     return ((before - after) / before)
 
-
-def run_rk4_assimilation_for_trajectory(
-    key, xb_data, background_error_rk4, obs_idx, obs_type, obs_value,
-    obs_error, nobs, num_cg_iterations, truth_t, npz_nl, npz_ad, phi
-):
-    # Print progress every 1000 samples (rank-independent)
-    if key % 1000 == 0:
-        print(f"Completed assimilation for {key} trajectories.")
-        
-    xb_0_rk4 = xb_data["perturbed_initial_state"]
-    xb_rk4 = xb_data["rk4_background_state"]
-    truth = xb_data["truth"]
-    
-    # For RK4
-    jo_b_rk4 = np.sum(((xb_rk4[obs_idx, obs_type] - obs_value) ** 2) / obs_error)
-    jb_b_rk4 = np.sum(((xb_rk4[0, :] - xb_0_rk4) ** 2) / np.diag(background_error_rk4))
-    J_total_b_rk4 = 0.5 * jb_b_rk4 + 0.5 * jo_b_rk4
-
-    b = obs_value - xb_rk4[obs_idx, obs_type]
-    cg_iter_count = [0]
-
-    def callback(xk):
-        cg_iter_count[0] += 1
-
-    innerloop = make_innerloop(xb_rk4, truth_t, background_error_rk4)
-    A = LinearOperator((nobs, nobs), matvec=innerloop)
-
-    start_time = time.time()
-    x, exit_code = cg(A, b, rtol=1e-13, maxiter=num_cg_iterations, callback=callback)
-    end_time = time.time()
-    total_time = end_time - start_time
-    converged = int(exit_code == 0)
-
-    tfrc, frc = obs_forcing(obs_time, obs_type, x, truth_t)
-    ad_x0 = np.zeros(3)
-    ad = rk4_ad(npz_nl, npz_ad, xb_rk4, ad_x0, truth_t, tfrc, frc, phi)
-    z = background_error_rk4.dot(ad.T).T[0]
-
-    xa_rk4 = rk4(npz_nl, xb_0_rk4 + z, truth_t, None, 0, phi)
-
-    jo_a_rk4 = np.sum(((xa_rk4[obs_idx, obs_type] - obs_value) ** 2) / obs_error)
-    jb_a_rk4 = np.sum(((xa_rk4[0, :] - xb_0_rk4) ** 2) / np.diag(background_error_rk4))
-    J_total_a_rk4 = 0.5 * jb_a_rk4 + 0.5 * jo_a_rk4
-
-    misfitb_rk4 = np.sqrt(np.sum((truth - xb_rk4) ** 2))
-    misfita_rk4 = np.sqrt(np.sum((truth - xa_rk4) ** 2))
-    improvement_rk4 = 100 * ((misfitb_rk4 - misfita_rk4) / misfitb_rk4)
-    
-    # pct_drop_J = ((J_total_b_rk4 - J_total_a_rk4) / J_total_b_rk4)
-    # pct_drop_Jo = ((jo_b_rk4 - jo_a_rk4) / jo_b_rk4)
-    # pct_drop_Jb = ((jb_b_rk4 - jb_a_rk4) / jb_b_rk4)
-    pct_drop_J  = safe_pct_drop(J_total_b_rk4, J_total_a_rk4)
-    pct_drop_Jo = safe_pct_drop(jo_b_rk4, jo_a_rk4)
-    pct_drop_Jb = safe_pct_drop(jb_b_rk4, jb_a_rk4)
-
-    result_dict = {
-        "xa_rk4": xa_rk4,
-        "xb_rk4": xb_rk4,
-        "jo_b_rk4": jo_b_rk4,
-        "jb_b_rk4": jb_b_rk4,
-        "J_total_b_rk4": J_total_b_rk4,
-        "jo_a_rk4": jo_a_rk4,
-        "jb_a_rk4": jb_a_rk4,
-        "J_total_a_rk4": J_total_a_rk4,
-        "rk4_misfitb": misfitb_rk4,
-        "rk4_misfita": misfita_rk4,
-        "Improvement_rk4": improvement_rk4,
-        "pct_drop_J_rk4": pct_drop_J,
-        "pct_drop_Jo_rk4": pct_drop_Jo,
-        "pct_drop_Jb_rk4": pct_drop_Jb,
-        "cg_iterations_rk4": cg_iter_count[0],
-        "converged_rk4": converged,
-        "exit_code_rk4": exit_code,
-        "rk4_time": total_time,
-    }
-
-    return key, result_dict
-
-# Pack shared arguments
-shared_args = {
-    "background_error_rk4": B0,
-    "obs_idx": obs_idx,
-    "obs_type": obs_type,
-    "obs_value": obs_value,
-    "obs_error": obs_error,
-    "nobs": nobs,
-    "num_cg_iterations": num_cg_iterations,
-    "truth_t": truth_t,
-    "npz_nl": npz_nl,
-    "npz_ad": npz_ad,
-    "phi": phi,
-}
-
-# Run assimilation in parallel
-rk4_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky", batch_size=10)(
-    delayed(run_rk4_assimilation_for_trajectory)(key, xb_data, **shared_args)
-    for key, xb_data in xb_dict.items()
-)
-
-# Reconstruct result dictionary
-rk4_assimilation_results = {key: result for key, result in rk4_assimilation_results_parallel}
-print(f"RK4 Assimilation complete - {len(rk4_assimilation_results)} trajectories computed.")
-
-joblib.dump(rk4_assimilation_results, f"~/data/assimilation_results/two_samples_per_day_rk4_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_compressed.pkl")
-### PINN Jacobian Calculation
+### nn Jacobian Calculation
 # Prepare shared arguments
-pi_npz_shared_args = dict(
-    model=pi_npz_model,
+nn_npz_shared_args = dict(
+    model=nn_npz_model,
     dtype=dtype,
     nd_ntot=nd_ntot,
 )
 
 # Run in parallel
-pi_npz_jacobian_start_time = time.time()
-pi_npz_jacobian_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=10)(
+nn_npz_jacobian_start_time = time.time()
+nn_npz_jacobian_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=10)(
     delayed(compute_jacobians)(
-        model=pi_npz_shared_args["model"],                        # <-- pass model explicitly
-        nd_trajectory=xb_data["pi_npz_background_state"] / nd_ntot,  # rescale to ND
+        model=nn_npz_shared_args["model"],                        # <-- pass model explicitly
+        nd_trajectory=xb_data["nn_npz_background_state"] / nd_ntot,  # rescale to ND
         nd_ntot=nd_ntot,
         return_dimensional=True,                                  # get dimensional Jacobians
         dtype=dtype,
@@ -651,20 +451,20 @@ pi_npz_jacobian_results = Parallel(n_jobs=num_jobs, backend="loky", batch_size=1
     )
     for key, xb_data in xb_dict.items()
 )
-pi_npz_jacobian_end_time = time.time()
+nn_npz_jacobian_end_time = time.time()
 
 # Convert results back to dictionary (preserve key association)
-pi_npz_jacobians_per_trajectory = {
+nn_npz_jacobians_per_trajectory = {
     key: jacobians
-    for (key, _), jacobians in zip(xb_dict.items(), pi_npz_jacobian_results)
+    for (key, _), jacobians in zip(xb_dict.items(), nn_npz_jacobian_results)
 }
 
 print(f"Jacobian Matrix Run time for all matrices (parallel): "
-      f"{pi_npz_jacobian_end_time - pi_npz_jacobian_start_time:.2f}s")
+      f"{nn_npz_jacobian_end_time - nn_npz_jacobian_start_time:.2f}s")
 sys.stdout.flush()
 
-# PI-NPZ Assimilation
-def run_pinn_assimilation_for_trajectory(
+# NN-NPZ Assimilation
+def run_nn_assimilation_for_trajectory(
     trajectory_key, xb_data, jacobians,
     model_name, model,
     *,  # everything after this must be keyword
@@ -681,9 +481,9 @@ def run_pinn_assimilation_for_trajectory(
     xb_model = xb_data[f"{model_name}_background_state"]   # <-- flexible
     truth   = xb_data["truth"]
     
-    jo_b_pinn = np.sum(((xb_model[obs_idx, obs_type] - obs_value) ** 2) / obs_error)
-    jb_b_pinn = np.sum(((xb_model[0, :] - xb_0) ** 2) / np.diag(B0))
-    J_total_b_pinn = 0.5 * jb_b_pinn + 0.5 * jo_b_pinn
+    jo_b_nn = np.sum(((xb_model[obs_idx, obs_type] - obs_value) ** 2) / obs_error)
+    jb_b_nn = np.sum(((xb_model[0, :] - xb_0) ** 2) / np.diag(B0))
+    J_total_b_nn = 0.5 * jb_b_nn + 0.5 * jo_b_nn
 
     cg_iter_count = [0]
 
@@ -693,7 +493,7 @@ def run_pinn_assimilation_for_trajectory(
     # Compute innovation vector (obs - background)
     b = obs_value - xb_model[obs_idx, obs_type]
 
-    innerloop_pinn = make_innerloop_pinn(
+    innerloop_nn = make_innerloop_nn(
         precomputed_jacobians=jacobians,
         state_matrix_nd_tensor=xb_model,
     )
@@ -701,7 +501,7 @@ def run_pinn_assimilation_for_trajectory(
     # Wrap innerloop in a LinearOperator
     A_orig = LinearOperator(
         shape=(nobs, nobs),
-        matvec=innerloop_pinn,
+        matvec=innerloop_nn,
         dtype=np_dtype
     )
     
@@ -713,7 +513,7 @@ def run_pinn_assimilation_for_trajectory(
         maxiter=num_cg_iterations,
         callback=callback
     )
-    pinn_total_time = time.time() - start
+    nn_total_time = time.time() - start
 
     # Step 1: Forcing aligned with model time (already 3D)
     tfrc, frc = obs_forcing(obs_time, obs_type, x_orig, truth_t)  # frc shape = (num_states, 3)
@@ -721,8 +521,8 @@ def run_pinn_assimilation_for_trajectory(
 
     num_states = xb_model.shape[0]
     
-    # Step 2: Run adjoint with PINN (3D Jacobians, 3D forcing)
-    ad_pinn = propagate_adjoint(
+    # Step 2: Run adjoint with nn (3D Jacobians, 3D forcing)
+    ad_nn = propagate_adjoint(
         precomputed_jacobians=[J[:3, :3] for J in jacobians],  # 3x3 Jacobians
         frc_ad_np=frc_ad_np,
         num_states=num_states,
@@ -732,50 +532,50 @@ def run_pinn_assimilation_for_trajectory(
     )
     
     # Step 3: Background covariance application (state correction)
-    z_pinn = B0.dot(ad_pinn.T).T    # (num_states, 3)
-    z_pinn = z_pinn[0, :]           # extract initial-time correction
+    z_nn = B0.dot(ad_nn.T).T    # (num_states, 3)
+    z_nn = z_nn[0, :]           # extract initial-time correction
     
     # Step 4: Update analysis initial condition
-    xa_0 = torch.tensor((xb_0 + z_pinn)/nd_ntot, device=device, dtype=dtype)
-    xa_pinn_nd, _ = forward_pinn(model=model, nd_initial_state=xa_0, trajectory_times=truth_t)
-    xa_pinn = xa_pinn_nd.detach().numpy() * nd_ntot
+    xa_0 = torch.tensor((xb_0 + z_nn)/nd_ntot, device=device, dtype=dtype)
+    xa_nn_nd, _ = forward_nn(model=model, nd_initial_state=xa_0, trajectory_times=truth_t, dtype=dtype)
+    xa_nn = xa_nn_nd.detach().cpu().numpy() * nd_ntot
 
-    jo_a_pinn = np.sum(((xa_pinn[obs_idx, obs_type] - obs_value)**2) / obs_error)
-    jb_a_pinn = np.sum(((xa_pinn[0, :] - xb_0) ** 2) / np.diag(B0))
-    J_total_a_pinn = 0.5 * jb_a_pinn + 0.5 * jo_a_pinn
+    jo_a_nn = np.sum(((xa_nn[obs_idx, obs_type] - obs_value)**2) / obs_error)
+    jb_a_nn = np.sum(((xa_nn[0, :] - xb_0) ** 2) / np.diag(B0))
+    J_total_a_nn = 0.5 * jb_a_nn + 0.5 * jo_a_nn
 
-    misfitb_pinn = np.sqrt(np.sum((truth - xb_model) ** 2))
-    misfita_pinn = np.sqrt(np.sum((truth - xa_pinn) ** 2))
-    improvement_pinn = 100 * ((misfitb_pinn - misfita_pinn) / misfitb_pinn)
+    misfitb_nn = np.sqrt(np.sum((truth - xb_model) ** 2))
+    misfita_nn = np.sqrt(np.sum((truth - xa_nn) ** 2))
+    improvement_nn = 100 * ((misfitb_nn - misfita_nn) / misfitb_nn)
     
-    pct_drop_J  = safe_pct_drop(J_total_b_pinn, J_total_a_pinn)
-    pct_drop_Jo = safe_pct_drop(jo_b_pinn, jo_a_pinn)
-    pct_drop_Jb = safe_pct_drop(jb_b_pinn, jb_a_pinn)
+    pct_drop_J  = safe_pct_drop(J_total_b_nn, J_total_a_nn)
+    pct_drop_Jo = safe_pct_drop(jo_b_nn, jo_a_nn)
+    pct_drop_Jb = safe_pct_drop(jb_b_nn, jb_a_nn)
     
     result_dict = {
-        f"xa_{model_name}": xa_pinn,
+        f"xa_{model_name}": xa_nn,
         f"xb_{model_name}": xb_model,
-        f"jo_b_{model_name}": jo_b_pinn,
-        f"jb_b_{model_name}": jb_b_pinn,
-        f"J_total_b_{model_name}": J_total_b_pinn,
-        f"jo_a_{model_name}": jo_a_pinn,
-        f"jb_a_{model_name}": jb_a_pinn,
-        f"J_total_a_{model_name}": J_total_a_pinn,
-        f"{model_name}_misfitb": misfitb_pinn,
-        f"{model_name}_misfita": misfita_pinn,
-        f"Improvement_{model_name}": improvement_pinn,
+        f"jo_b_{model_name}": jo_b_nn,
+        f"jb_b_{model_name}": jb_b_nn,
+        f"J_total_b_{model_name}": J_total_b_nn,
+        f"jo_a_{model_name}": jo_a_nn,
+        f"jb_a_{model_name}": jb_a_nn,
+        f"J_total_a_{model_name}": J_total_a_nn,
+        f"{model_name}_misfitb": misfitb_nn,
+        f"{model_name}_misfita": misfita_nn,
+        f"Improvement_{model_name}": improvement_nn,
         f"pct_drop_J_{model_name}": pct_drop_J,
         f"pct_drop_Jo_{model_name}": pct_drop_Jo,
         f"pct_drop_Jb_{model_name}": pct_drop_Jb,
         f"cg_iterations_{model_name}": cg_iter_count[0],
         f"converged_{model_name}": int(exit_code == 0),
         f"exit_code_{model_name}": exit_code,
-        f"{model_name}_time": pinn_total_time,
+        f"{model_name}_time": nn_total_time,
     }
 
     return trajectory_key, result_dict
    
-pi_npz_shared_args = {
+nn_npz_shared_args = {
     "dtype": dtype,
     "nd_ntot": nd_ntot,
     "obs_time": obs_time,
@@ -784,26 +584,35 @@ pi_npz_shared_args = {
     "obs_error": obs_error,
     "nobs": nobs,
     "B0": B0,
-    "model_name": "pi_npz",
-    "model": pi_npz_model,
+    "model_name": "nn_npz",
+    "model": nn_npz_model,
     "device": device,
     "truth_t": truth_t,
     "obs_idx": obs_idx,
     "num_cg_iterations": num_cg_iterations
     
 }
-pi_npz_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky")(
-    delayed(run_pinn_assimilation_for_trajectory)(
+nn_npz_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky")(
+    delayed(run_nn_assimilation_for_trajectory)(
         key,
         xb_dict[key],
-        pi_npz_jacobians_per_trajectory[key],
-        **pi_npz_shared_args
+        nn_npz_jacobians_per_trajectory[key],
+        **nn_npz_shared_args
     )
     for key in xb_dict.keys()
 )
 
 # Rebuild dict
-pi_npz_assimilation_results = {key: result for key, result in pi_npz_assimilation_results_parallel}
-print(f"PI-NPZ Assimilation complete - {len(pi_npz_assimilation_results)} trajectories computed.")
-joblib.dump(pi_npz_assimilation_results, f"~/data/assimilation_results/two_samples_per_day_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+nn_npz_assimilation_results = {key: result for key, result in nn_npz_assimilation_results_parallel}
+print(f"NN-NPZ Assimilation complete - {len(nn_npz_assimilation_results)} trajectories computed.")
+assim_output_path = os.path.join(
+    OUTPUT_DIR,
+    f"two_samples_per_day_nn_npz_frozen_assimilation_"
+    f"{NUM_XB0}xb_estimates_"
+    f"min_guess_{MIN_GUESS_VAL}_"
+    f"{num_cg_iterations}_"
+    f"{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl"
+)
 
+joblib.dump(nn_npz_assimilation_results, assim_output_path)
+print(f"NN-NPZ assimilation results saved to: {assim_output_path}")

@@ -26,8 +26,6 @@ OUTPUT_DIR = os.path.join(
     "nn_assimilation_results"
 )
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 sys.path.append(MODEL_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

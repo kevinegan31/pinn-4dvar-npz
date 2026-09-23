@@ -1,63 +1,71 @@
 #!/bin/bash
 
-# Define variables
-SCRIPT_NAME="irregular_assimilation_test.py"
-PID_FILE="irregular_assimilation_test.pid"
-LOGFILE="irregular_assimilation_test_$(date +'%Y%m%d_%H%M%S').log"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+SCRIPT="${SCRIPT_DIR}/irregular_assimilation_nn_test.py"
+PID_FILE="${SCRIPT_DIR}/irregular_assimilation_nn_test.pid"
+LOG_DIR="${SCRIPT_DIR}/logs"
 
-# Function to start the job
+mkdir -p "$LOG_DIR"
+
+LOGFILE="${LOG_DIR}/irregular_assimilation_nn_test_$(date +'%Y%m%d_%H%M%S').log"
+
+# NN-NPZ configuration
+export NUM_LAYERS=5
+export NUM_NEURONS=512
+export LEARNING_RATE=0.0001
+
+# Assimilation configuration
+export NUM_XB0="${NUM_XB0:-10000}"
+export NUM_CG="${NUM_CG:-2000}"
+export NUM_JOBS="${NUM_JOBS:-4}"
+export MIN_GUESS_VAL="${MIN_GUESS_VAL:-0.001}"
+
 start_job() {
-    # Check if a previous job is already running
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "Error: A training job is already running with PID $PID."
-            echo "Stop it first using: ./run_pinn.sh stop"
+
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "Error: assimilation job already running with PID $PID."
             exit 1
         else
-            echo "Warning: Stale PID file found. Removing..."
+            echo "Removing stale PID file."
             rm -f "$PID_FILE"
         fi
     fi
 
-    # Start the script in the background and save the PID
-    nohup python "$SCRIPT_NAME" > "$LOGFILE" 2>&1 &
+    nohup python "$SCRIPT" > "$LOGFILE" 2>&1 &
     echo $! > "$PID_FILE"
 
-    echo "Training started in the background."
-    echo "Logs: $LOGFILE"
-    echo "To stop the process, use: ./run_pinn.sh stop"
+    echo "NN-NPZ assimilation started."
+    echo "PID: $(cat "$PID_FILE")"
+    echo "Log: $LOGFILE"
 }
 
-# Function to stop the job
 stop_job() {
     if [ ! -f "$PID_FILE" ]; then
-        echo "Error: No PID file found. Is the job running?"
+        echo "Error: no PID file found."
         exit 1
     fi
 
     PID=$(cat "$PID_FILE")
-    
-    if ps -p $PID > /dev/null 2>&1; then
-        echo "Stopping training process (PID: $PID)..."
-        kill $PID
-        sleep 2  # Give it time to stop
 
-        if ps -p $PID > /dev/null 2>&1; then
-            echo "Process did not stop. Forcing termination..."
-            kill -9 $PID
+    if ps -p "$PID" > /dev/null 2>&1; then
+        echo "Stopping NN-NPZ assimilation (PID $PID)..."
+        kill "$PID"
+        sleep 2
+
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "Process did not stop; forcing termination."
+            kill -9 "$PID"
         fi
-
-        echo "Training stopped successfully."
-        rm -f "$PID_FILE"
     else
-        echo "Error: Process $PID not found. Removing stale PID file."
-        rm -f "$PID_FILE"
+        echo "Process $PID is no longer running."
     fi
+
+    rm -f "$PID_FILE"
 }
 
-# Main control logic: start or stop the job
 case "$1" in
     start)
         start_job
