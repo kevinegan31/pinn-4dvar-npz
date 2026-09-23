@@ -189,7 +189,7 @@ if __name__ == '__main__':
     # f'lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min'
     # f'_{{epoch:04d}}'
     # )
-    checkpoint_name = 'pi_npz_final_{{epoch:04d}}'
+    checkpoint_name = 'pi_npz_final_{epoch:04d}'
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
