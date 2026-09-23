@@ -202,7 +202,7 @@ if __name__ == '__main__':
     survival_99_dict = {"frac_survived": -1.0}  # default value
     if trainer.is_global_zero:
         src = os.path.join(checkpoint_dir, "last.ckpt")
-        dst = os.path.join(checkpoint_dir, f"{checkpoint_name}_final.ckpt")
+        dst = os.path.join(checkpoint_dir, f"nn_npz_final.ckpt")
         shutil.copy(src, dst)  # or shutil.move if you want to remove original
         os.remove(src)         # Delete the original last.ckpt to avoid clutter
         # =============================

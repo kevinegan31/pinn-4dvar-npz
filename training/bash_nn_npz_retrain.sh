@@ -19,6 +19,12 @@ LOGFILE="$LOG_DIR/nn_npz_retrain_${DATASET_IDX}_$(date +'%Y%m%d_%H%M%S').log"
 # Use physical GPU 0 only
 export CUDA_VISIBLE_DEVICES=0
 
+export NUM_LAYERS=5
+export NUM_NEURONS=512
+export LEARNING_RATE=0.0001
+export NEPOCH_ADAM="${NEPOCH_ADAM:-5000}"
+export BATCH_SIZE=2048
+
 export ACTIVATION_FUNCTION='gelu'
 export CSV_PATH="./data/training_validation_data/npz_training_set.csv"
 export DATASET_IDX="$DATASET_IDX"
