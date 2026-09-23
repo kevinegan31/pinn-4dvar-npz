@@ -175,10 +175,11 @@ if __name__ == '__main__':
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
-        monitor=None,           # don’t monitor anything, just save periodically
-        save_top_k=-1,          # keep all checkpoints
-        every_n_epochs=500,    # or 500, depending on how fine you want
+        monitor=None,
+        save_top_k=-1,
+        every_n_epochs=500,
         save_last=True,
+        auto_insert_metric_name=False,
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')  # or 'epoch' if that fits your decay style
     trainer = pl.Trainer(max_epochs=NEPOCH_ADAM,
