@@ -171,7 +171,7 @@ if __name__ == '__main__':
         "seed": SEED,
         "batch_size": batch_size,
     }
-    checkpoint_name = 'nn_npz_final_{{epoch:04d}}'
+    checkpoint_name = 'nn_npz_final_{epoch:04d}'
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
