@@ -28,7 +28,7 @@ device = "cpu"
 num_layers = 5
 num_neurons = 512
 learning_rate = 0.0001
-activation_function = "gelu"
+activation_function = torch.nn.GELU
 
 nd_ntot = 2.75
 
