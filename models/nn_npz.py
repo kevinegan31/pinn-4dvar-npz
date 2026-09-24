@@ -330,4 +330,4 @@ def compute_jacobians(model, nd_trajectory, nd_ntot, return_dimensional=False,
         F_nd = F_dim
 
     # Preserve the original API: list of T individual 4x4 tensors.
-    return list(F_nd.unbind(dim=0))
+    return [J.detach().clone() for J in F_nd.unbind(dim=0)]
