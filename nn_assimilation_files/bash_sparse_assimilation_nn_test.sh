@@ -3,12 +3,11 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SCRIPT="${SCRIPT_DIR}/sparse_assimilation_nn_test.py"
-PID_FILE="${SCRIPT_DIR}/sparse_assimilation_nn_test.pid"
 LOG_DIR="${SCRIPT_DIR}/logs"
-
 mkdir -p "$LOG_DIR"
 
 LOGFILE="${LOG_DIR}/sparse_assimilation_nn_test_$(date +'%Y%m%d_%H%M%S').log"
+PID_FILE="${LOG_DIR}/sparse_assimilation_nn_test_$(date +'%Y%m%d_%H%M%S').pid"
 
 # NN-NPZ configuration
 export NUM_LAYERS=5

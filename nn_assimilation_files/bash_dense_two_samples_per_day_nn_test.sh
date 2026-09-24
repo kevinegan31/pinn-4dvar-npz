@@ -3,12 +3,12 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SCRIPT="${SCRIPT_DIR}/dense_two_samples_per_day_nn_test.py"
-PID_FILE="${SCRIPT_DIR}/dense_two_samples_per_day_nn_test.pid"
 LOG_DIR="${SCRIPT_DIR}/logs"
 
 mkdir -p "$LOG_DIR"
 
 LOGFILE="${LOG_DIR}/dense_two_samples_per_day_nn_test_$(date +'%Y%m%d_%H%M%S').log"
+PID_FILE="${LOG_DIR}/dense_two_samples_per_day_nn_test_$(date +'%Y%m%d_%H%M%S').pid"
 
 # NN-NPZ configuration
 export NUM_LAYERS=5
