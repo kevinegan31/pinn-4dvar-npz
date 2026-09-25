@@ -165,8 +165,8 @@ def forward_nn_assimilation(model, nd_initial_state, trajectory_times, dtype):
 
     return forward_predictions_tensor, trajectory_times
 
-def compute_jacobians(model, nd_trajectory, nd_ntot, return_dimensional=False,
-                      dtype=torch.float32, device='cpu'):
+def compute_jacobians_old(model, nd_trajectory, nd_ntot, return_dimensional=False,
+                          dtype=torch.float32, device='cpu'):
     """
     Compute Jacobians of model.dnn along a given ND trajectory.
     Returns ND Jacobians by default, optionally dimensional.
@@ -254,3 +254,80 @@ def propagate_adjoint(precomputed_jacobians, frc_ad_np, num_states,
         predicted_ad = predicted_ad.flip(dims=[0])
 
     return predicted_ad
+def compute_jacobians(model, nd_trajectory, nd_ntot, return_dimensional=False,
+                      dtype=torch.float32, device='cpu'):
+    """
+    Compute Jacobians of model.dnn along a given ND trajectory.
+
+    Returns ND Jacobians by default, optionally dimensional.
+    """
+    from torch.func import jacrev, vmap
+
+    model.dnn.eval()
+
+    # Append ones column for bias/time feature
+    state_matrix_nd = torch.as_tensor(
+        nd_trajectory, dtype=dtype, device=device
+    )
+    ones_column = torch.ones(
+        (state_matrix_nd.shape[0], 1),
+        dtype=dtype,
+        device=device
+    )
+    state_matrix_nd = torch.cat(
+        [state_matrix_nd, ones_column], dim=1
+    )
+
+    # Jacobian of a single NN evaluation:
+    # [4] -> [3], therefore Jacobian is [3, 4].
+    jac_fn = jacrev(model.dnn)
+
+    # Vectorize over all states in the trajectory:
+    # [T, 4] -> [T, 3, 4].
+    F_nd = vmap(jac_fn)(state_matrix_nd)
+
+    # Preserve existing augmented 4x4 representation.
+    # [T, 3, 4] -> [T, 4, 4].
+    zero_rows = torch.zeros(
+        (F_nd.shape[0], 1, F_nd.shape[2]),
+        dtype=F_nd.dtype,
+        device=F_nd.device
+    )
+    F_nd = torch.cat([F_nd, zero_rows], dim=1)
+
+    if return_dimensional:
+        # Preserve the existing state-block dimensional scaling.
+        if np.isscalar(nd_ntot) or (
+            isinstance(nd_ntot, torch.Tensor)
+            and nd_ntot.ndim == 0
+        ):
+            nd_ntot_vec = torch.full(
+                (F_nd.shape[1] - 1,),
+                float(nd_ntot),
+                dtype=dtype,
+                device=device
+            )
+        else:
+            nd_ntot_vec = torch.as_tensor(
+                nd_ntot,
+                dtype=dtype,
+                device=device
+            )
+
+        D = torch.diag(nd_ntot_vec)
+        D_inv = torch.linalg.inv(D)
+
+        F_dim = F_nd.clone()
+
+        # Batched equivalent of:
+        # D @ F_nd[:-1, :-1] @ D_inv
+        F_dim[:, :-1, :-1] = (
+            D.unsqueeze(0)
+            @ F_nd[:, :-1, :-1]
+            @ D_inv.unsqueeze(0)
+        )
+
+        F_nd = F_dim
+
+    # Preserve the original API: list of T individual 4x4 tensors.
+    return [J.detach().clone() for J in F_nd.unbind(dim=0)]

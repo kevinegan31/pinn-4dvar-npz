@@ -17,10 +17,14 @@ import shutil
 import os
 import sys
 sys.path.append('./models/')
-from pi_npz_model import DNN, PhysicsInformedNN
+from nn_npz import DNN, NN, forward_nn
 from traditional_npz import run_rk4_for_initial_conditions
 sys.path.append('./utils/')
-from additional_files import compute_survival_metrics, forward_pinn, read_and_preprocess_data, calculate_global_rmse
+from additional_files import (
+    compute_survival_metrics,
+    read_and_preprocess_data,
+    calculate_global_rmse
+)
 
 import torch
 from torch import nn
@@ -53,7 +57,7 @@ NUM_NEURONS = int(os.getenv('NUM_NEURONS', '96'))
 LEARNING_RATE = float(os.getenv('LEARNING_RATE', '0.005'))
 
 # Environment variables
-NEPOCH_ADAM = int(os.getenv('NEPOCH_ADAM', '1000')) #100 #int(os.getenv('NEPOCH_ADAM', '100'))
+NEPOCH_ADAM = int(os.getenv('NEPOCH_ADAM', '5000')) #100 #int(os.getenv('NEPOCH_ADAM', '100'))
 ACTIVATION_FUNCTION = os.getenv('ACTIVATION_FUNCTION', 'gelu')  # Keep as a string
 CSV_PATH = os.getenv('CSV_PATH', './data/training_validation_data/npz_training_set.csv')
 stability_threshold = float(os.getenv('STABILITY_THRESHOLD', '0.9'))  # e.g., 0.95 for 95% skill
@@ -72,9 +76,13 @@ if ACTIVATION_FUNCTION not in activation_mapping:
 ACTIVATION_FUNCTION_CLASS = activation_mapping[ACTIVATION_FUNCTION]  # Class for model
 
 # Number of GPUs
-num_gpus = torch.cuda.device_count()
-if num_gpus < 1:
-    raise ValueError("No GPUs available for training")
+num_gpus = 1
+
+if torch.cuda.device_count() < num_gpus:
+    raise ValueError(
+        f"Requested {num_gpus} GPU, but only "
+        f"{torch.cuda.device_count()} available."
+    )
 
 print(f"Number of GPUs: {num_gpus}")
 sys.stdout.flush()
@@ -132,39 +140,22 @@ if __name__ == '__main__':
     num_layers = NUM_LAYERS
     num_neurons = NUM_NEURONS
     learning_rate = LEARNING_RATE
-    lambda_u = 1.0 #config["lambda_u"]
-    lambda_f = 1.0 #config["lambda_f"]
-    checkpoint_dir = f"./retrain_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr"
+    checkpoint_dir = f"./retrain_nn_{formatted_timestamp}_checkpoints_{NUM_MINUTES}_minutes_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr"
 
     # Check if the directory exists, and if not, create it
     ensure_dir(checkpoint_dir)
     # Parameters Dictionary
     dtype = torch.float32
-    t_scale = 1.0
-    alpha_tilde = 1.2164 * t_scale
-    beta_tilde = 1.2795 * ND_NTOT
-    b_tilde = 0.1 * t_scale
-    c_tilde = 0.2 * t_scale
-    e_tilde = 0.5 * t_scale * ND_NTOT
-    f_tilde = 0.5 * t_scale * ND_NTOT
-    params_dict = {
-    'alpha_tilde': torch.tensor([alpha_tilde], dtype=dtype),
-    'beta_tilde': torch.tensor([beta_tilde], dtype=dtype),
-    'b_tilde': torch.tensor([b_tilde], dtype=dtype),
-    'c_tilde': torch.tensor([c_tilde], dtype=dtype),
-    'e_tilde': torch.tensor([e_tilde], dtype=dtype),
-    'f_tilde': torch.tensor([f_tilde], dtype=dtype),
-    }
     # Model
-    model = PhysicsInformedNN(DNN, num_layers, num_neurons,
-                              ACTIVATION_FUNCTION_CLASS, params_dict,
-                              lambda_u, lambda_f, learning_rate, dtype=dtype)
+    model = NN(DNN, num_layers, num_neurons,
+               ACTIVATION_FUNCTION_CLASS,
+               learning_rate, dtype=dtype)
     sys.stdout.flush()
     # Initialize WandbLogger
     n_obs = len(x)
     wandb_logger = WandbLogger(
-        project=f"retrain_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr",   # Replace with your WandB project name
-        name=f"retrain_{NEPOCH_ADAM}_epochs_{formatted_timestamp}_dataset_{DATASET_IDX}",  # Unique name for each run using timestamp
+        project=f"retrain_nn_{formatted_timestamp}_{NUM_MINUTES}_minutes_{n_obs}_obs_{num_layers}_layers_{num_neurons}_neurons_{learning_rate}_lr",   # Replace with your WandB project name
+        name=f"retrain_nn_{NEPOCH_ADAM}_epochs_{formatted_timestamp}_dataset_{DATASET_IDX}",  # Unique name for each run using timestamp
         log_model=False,
         # save_dir="./checkpoints/"   # Optional local directory to save logs
     )
@@ -173,8 +164,6 @@ if __name__ == '__main__':
         "dataset_idx": DATASET_IDX,
         "activation_function": ACTIVATION_FUNCTION,
         "n_obs": n_obs,
-        "lambda_u": lambda_u,
-        "lambda_f": lambda_f,
         "learning_rate": learning_rate,
         "num_layers": num_layers,
         "num_neurons": num_neurons,
@@ -182,14 +171,7 @@ if __name__ == '__main__':
         "seed": SEED,
         "batch_size": batch_size,
     }
-    # checkpoint_name = f'optimal_{NEPOCH_ADAM}_total_epochs_retrain_opt_{DATASET_IDX}_dataset_{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min_epoch{{epoch:04d}}'
-    # checkpoint_name = (
-    # f'optimal_{NEPOCH_ADAM}_epochs_retrain_opt_{DATASET_IDX}_dataset_'
-    # f'{n_obs}_nobs_batch_size_{batch_size}_layers_{num_layers}_neurons_{num_neurons}_'
-    # f'lr_{learning_rate}_activation_{ACTIVATION_FUNCTION}_{ND_NTOT}_Nt_{SEED}_seed_{NUM_MINUTES}_min'
-    # f'_{{epoch:04d}}'
-    # )
-    checkpoint_name = 'pi_npz_final_{epoch:04d}'
+    checkpoint_name = 'nn_npz_final_{epoch:04d}'
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
         filename=checkpoint_name,
@@ -203,7 +185,7 @@ if __name__ == '__main__':
     trainer = pl.Trainer(max_epochs=NEPOCH_ADAM,
                          accelerator='gpu',
                          devices=num_gpus,
-                         strategy='ddp',#if num_gpus > 1 else "auto",
+                         strategy='auto',#if num_gpus > 1 else "auto",
                          deterministic=True,
                          logger=wandb_logger,
                          callbacks=[checkpoint_callback, lr_monitor],
@@ -221,7 +203,7 @@ if __name__ == '__main__':
     survival_99_dict = {"frac_survived": -1.0}  # default value
     if trainer.is_global_zero:
         src = os.path.join(checkpoint_dir, "last.ckpt")
-        dst = os.path.join(checkpoint_dir, f"{checkpoint_name}_final.ckpt")
+        dst = os.path.join(checkpoint_dir, f"nn_npz_final.ckpt")
         shutil.copy(src, dst)  # or shutil.move if you want to remove original
         os.remove(src)         # Delete the original last.ckpt to avoid clutter
         # =============================
@@ -239,14 +221,21 @@ if __name__ == '__main__':
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         rollout_tensor = torch.tensor(rollout_ics, dtype=torch.float32, device=model.device)
 
-        def run_forward_pinn_single_safe(x0, model, nd_ntot, times):
-            pred = forward_pinn(model, x0, nd_ntot, times).detach().cpu().numpy()
+        def run_forward_nn_single_safe(x0, model, nd_ntot, times):
+            pred = forward_nn(
+                model, x0, nd_ntot, times
+            ).detach().cpu().numpy()
+
             if not np.isfinite(pred).all():
-                return np.full((len(times), 3), np.nan)  # ensure correct shape
+                return np.full((len(times), 3), np.nan)
+
             return pred
 
         forward_predictions_list = Parallel(n_jobs=6)(
-            delayed(run_forward_pinn_single_safe)(x0, model, ND_NTOT, times) for x0 in rollout_tensor
+            delayed(run_forward_nn_single_safe)(
+                x0, model, ND_NTOT, times
+            )
+            for x0 in rollout_tensor
         )
         # Align exactly with all franks trajectories
         forward_actuals = [np.array(gt) for gt in franks_trajectories]  # No slicing!
@@ -327,7 +316,7 @@ if __name__ == '__main__':
         total_gpu_minutes = total_gpu_hours * 60
         total_gpu_seconds = total_gpu_hours * 3600
         # Save to CSV
-        summary_log_path = f"./runtime_logs/pinn_retrain_{SEED}_seed_{batch_size}_batches_{NEPOCH_ADAM}_epochs_{DATASET_IDX}_dataset_holdout_rollout_total_runtime_summary_{formatted_timestamp}.csv"
+        summary_log_path = f"./runtime_logs/nn_npz_retrain_{SEED}_seed_{batch_size}_batches_{NEPOCH_ADAM}_epochs_{DATASET_IDX}_dataset_holdout_rollout_total_runtime_summary_{formatted_timestamp}.csv"
         os.makedirs("./runtime_logs", exist_ok=True)
         with open(summary_log_path, mode='w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
