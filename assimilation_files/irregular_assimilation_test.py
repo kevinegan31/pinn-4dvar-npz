@@ -511,7 +511,7 @@ for i in rk4_dict:
 
 
 # === Save the combined dictionary ===
-joblib.dump(xb_dict, f"~/data/assimilation_results/irregular_sparse_xb_data_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_frozen_params_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+joblib.dump(xb_dict, f"../data/assimilation_results/irregular_sparse_xb_data_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_frozen_params_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
 print(f"Xb Data saved - {len(xb_dict)} trajectories computed.")
 # Define background error model
 background_error = np.array([xb_error_N, xb_error_P, xb_error_Z])
@@ -626,7 +626,7 @@ rk4_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky", ba
 rk4_assimilation_results = {key: result for key, result in rk4_assimilation_results_parallel}
 print(f"RK4 Assimilation complete - {len(rk4_assimilation_results)} trajectories computed.")
 
-joblib.dump(rk4_assimilation_results, f"~/data/assimilation_results/irregular_sparse_rk4_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_compressed.pkl")
+joblib.dump(rk4_assimilation_results, f"../data/assimilation_results/irregular_sparse_rk4_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_compressed.pkl")
 ### PINN Jacobian Calculation
 # Prepare shared arguments
 pi_npz_shared_args = dict(
@@ -802,4 +802,4 @@ pi_npz_assimilation_results_parallel = Parallel(n_jobs=num_jobs, backend="loky")
 # Rebuild dict
 pi_npz_assimilation_results = {key: result for key, result in pi_npz_assimilation_results_parallel}
 print(f"PI-NPZ Assimilation complete - {len(pi_npz_assimilation_results)} trajectories computed.")
-joblib.dump(pi_npz_assimilation_results, f"~/data/assimilation_results/irregular_sparse_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
+joblib.dump(pi_npz_assimilation_results, f"../data/assimilation_results/irregular_sparse_pi_npz_frozen_params_assimilation_{NUM_XB0}xb_estimates_min_guess_{MIN_GUESS_VAL}_{num_cg_iterations}_{NUM_LAYERS}_{NUM_NEURONS}_compressed.pkl")
