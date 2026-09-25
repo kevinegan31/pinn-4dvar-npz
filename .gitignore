@@ -212,3 +212,4 @@ wandb/
 runtime_logs/
 nn_npz_*_checkpoints_*/
 retrain_nn_*_checkpoints_*/
+training/*_log_files/
