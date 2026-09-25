@@ -1,6 +1,6 @@
 # PI-NPZ 4D-Var
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.CONCEPT_ID.svg)](https://doi.org/10.5281/zenodo.CONCEPT_ID)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17538590.svg)](https://doi.org/10.5281/zenodo.17538590)
 
 Code and data for:
 
